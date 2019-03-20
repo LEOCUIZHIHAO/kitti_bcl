@@ -24,6 +24,8 @@ from second.utils.progress_bar import ProgressBar
 
 import caffe
 from caffe import layers as L, params as P
+from models import caffe_model
+from solvers import create_solver
 
 def _get_pos_neg_loss(cls_loss, labels):
     # cls_loss: [N, num_anchors, num_class]
@@ -84,6 +86,80 @@ def example_convert_to_torch(example, dtype=torch.float32,
             example_torch[k] = v
     return example_torch
 
+#caffe model prepare
+def caf_model(network, exp_dir, args):
+
+    # if args.cpu:
+    #     caffe.set_mode_cpu()
+    # else:
+    caffe.set_mode_gpu()
+    caffe.set_device(0)
+
+    if network == 'seq':
+        batch_norm = True
+        conv_weight_filler = 'xavier'
+        network = caffe_model.test_v1(arch_str='c32_b64_b128_b256_b256_b256_c128',
+                                     skip_str="6_2 6_3 6_4 6_5",
+                                     renorm_class=args.renorm_class,
+                                     dataset="kitti",
+                                     dataset_params=args.dataset_params,
+                                     feat_dims_str='x_y_z',
+                                     lattice_dims_str="x*64_y*64_z*64 x*32_y*32_z*32 x*16_y*16_z*16 x*8_y*8_z*8 x*4_y*4_z*4",
+                                     sample_size=3000,
+                                     batch_size=32,
+                                     batchnorm=batch_norm,
+                                     conv_weight_filler=conv_weight_filler,
+                                     save_path=os.path.join(exp_dir, 'net.prototxt'))
+
+        # deploy model use for prediction
+        caffe_model.test_v1(deploy=True,
+                           arch_str='c32_b64_b128_b256_b256_b256_c128',
+                           skip_str= "6_2 6_3 6_4 6_5",
+                           renorm_class=args.renorm_class,
+                           dataset="kitti",
+                           dataset_params=args.dataset_params,
+                           feat_dims_str='x_y_z',
+                           lattice_dims_str="x*64_y*64_z*64 x*32_y*32_z*32 x*16_y*16_z*16 x*8_y*8_z*8 x*4_y*4_z*4",
+                           sample_size=3000,
+                           batchnorm=batch_norm,
+                           save_path=os.path.join(exp_dir, 'net_deploy.prototxt'))
+    else:
+        assert network.endswith('.prototxt'), 'Please provide a valid prototxt file'
+        print('Using network defined at {}'.format(network))
+
+    random_seed = 0
+    debug_info = False
+    solver = create_solver.standard_solver(network,
+                                           network,
+                                           os.path.join(exp_dir, 'snapshot'),
+                                           base_lr= 0.0001,
+                                           gamma= 0.1,
+                                           stepsize= 2000,
+                                           test_iter= 10,
+                                           test_interval=20,
+                                           max_iter=2000,
+                                           snapshot=20,
+                                           solver_type='ADAM',
+                                           weight_decay=0.001,
+                                           iter_size=1,
+                                           debug_info=debug_info,
+                                           random_seed=random_seed,
+                                           save_path=os.path.join(exp_dir, 'solver.prototxt'))
+    solver = caffe.get_solver(solver)
+
+    # if args.init_model:
+    #     if args.init_model.endswith('.caffemodel'):
+    #         solver.net.copy_from(args.init_model)
+    #     else:
+    #         solver.net.copy_from(os.path.join(exp_dir, 'snapshot_iter_{}.caffemodel'.format(args.init_model)))
+    #
+    # if args.init_state:
+    #     if args.init_state.endswith('.solverstate'):
+    #         solver.restore(args.init_state)
+    #     else:
+    #         solver.restore(os.path.join(exp_dir, 'snapshot_iter_{}.solverstate'.format(args.init_state)))
+
+    solver.solve()
 
 def train(config_path,
           model_dir,
@@ -183,7 +259,12 @@ def train(config_path,
         target_assigner=target_assigner)
     data_iter = iter(dataset)
     example = next(data_iter)
-    
+
+    caf_model()
+
+    datalayer_train = L.Python(name='data', include=dict(phase=caffe.TRAIN), ntop=2,
+                                   python_param=dict(module='custom_layers', layer='InputData',
+                                   param_str=repr(dataset_params_train)))
     exit()
 
     def _worker_init_fn(worker_id):
