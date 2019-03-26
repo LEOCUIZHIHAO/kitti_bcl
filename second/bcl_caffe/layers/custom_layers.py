@@ -431,6 +431,151 @@ class CreateLoss(caffe.Layer):
         return cls_pos_loss, cls_neg_loss
 
 
+class PrepareLossWeight(caffe.Layer):
+    def setup(self, bottom, top):
+
+        self.labels = bottom[0].data
+
+        self.cls_weights, self.reg_weights, self.cared = self.prepare_loss_weights(self.labels)
+
+    def reshape(self, bottom, top):
+        top[0].reshape(*self.cls_weights.shape)
+        top[1].reshape(*self.reg_weights.shape)
+        top[2].reshape(*self.cared.shape)
+        pass
+    def forward(self, bottom, top):
+        pass
+    def prepare_loss_weights(self, labels,
+                            pos_cls_weight=1.0, # TODO: pass params here
+                            neg_cls_weight=1.0,
+                            loss_norm_type=LossNormType.NormByNumPositives,
+                            dtype="float32"):
+        """get cls_weights and reg_weights from labels.
+        """
+        cared = labels >= 0
+        # cared: [N, num_anchors]
+        positives = labels > 0
+        negatives = labels == 0
+        negative_cls_weights = negatives.astype(dtype) * neg_cls_weight
+        cls_weights = negative_cls_weights + pos_cls_weight * positives.astype(dtype)
+        reg_weights = positives.astype(dtype)
+        if loss_norm_type == LossNormType.NormByNumExamples:
+            num_examples = cared.astype(dtype).sum(1, keepdims=True)
+            num_examples = np.clip(num_examples, a_min=1.0, a_max=None)
+            cls_weights /= num_examples
+            bbox_normalizer = np.sum(positives, 1, keepdims=True).astype(dtype)
+            reg_weights /= np.clip(bbox_normalizer, a_min=1.0, a_max=None)
+        elif loss_norm_type == LossNormType.NormByNumPositives:  # for focal loss # TODO: double check
+            pos_normalizer = np.sum(positives, 1, keepdims=True).astype(dtype)
+            reg_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None)
+            cls_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None)
+        elif loss_norm_type == LossNormType.NormByNumPosNeg:
+            pos_neg = np.stack([positives, negatives], a_min=-1).astype(dtype)
+            normalizer = np.sum(pos_neg, 1, keepdims=True)  # [N, 1, 2]
+            cls_normalizer = np.sum((pos_neg * normalizer),-1)  # [N, M]
+            cls_normalizer = np.clip(cls_normalizer, a_min=1.0, a_max=None)
+            # cls_normalizer will be pos_or_neg_weight/num_pos_or_neg
+            normalizer = np.clip(normalizer, a_min=1.0, a_max=None)
+            reg_weights /= normalizer[:, 0:1, 0]
+            cls_weights /= cls_normalizer
+        else:
+            raise ValueError(
+                f"unknown loss norm type. available: {list(LossNormType)}")
+        return cls_weights, reg_weights, cared
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+
+class ClsLossCreate(caffe.Layer):
+    def setup(self, bottom, top):
+
+        self.cls_preds = bottom[0].data
+        self.labels = bottom[1].data
+        self.cared = bottom[2].data
+
+        cls_targets = self.labels * self.cared
+        cls_targets = np.expand_dims(cls_targets, -1).astype(int)
+
+        encode_background_as_zeros=True, # TODO: pass through
+        batch_size = 2
+        num_class = 1
+
+        # print("[debug] cls_preds shape", cls_preds.shape)
+        if encode_background_as_zeros:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class, -1)
+        else:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class + 1, -1)
+        # print("[debug] cls_preds shape after", self.cls_preds.shape)
+
+        cls_targets = np.squeeze(cls_targets, -1) # cls_targets.squeeze(-1)
+        # print("[debug] cls_targets shape", cls_targets.shape)
+        self.one_hot_targets = np.eye(num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
+        if encode_background_as_zeros:
+            self.one_hot_targets = self.one_hot_targets[..., 1:]
+        # print("[debug] one_hot_targets shape", self.one_hot_targets.shape)
+
+    def reshape(self, bottom, top):
+        #reshape to caffe pattern
+        self.one_hot_targets = np.transpose(self.one_hot_targets, (0,2,1))
+        top[0].reshape(*self.cls_preds.shape)
+        top[1].reshape(*self.one_hot_targets.shape)
+        pass
+    def forward(self, bottom, top):
+        pass
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+class RegLossCreate(caffe.Layer):
+    def setup(self, bottom, top):
+
+        box_code_size = 7
+        self.box_preds = bottom[0].data
+        self.reg_targets = bottom[1].data
+        batch_size = int(self.box_preds.shape[0])
+        self.box_preds = self.box_preds.reshape(batch_size, -1, box_code_size)
+
+        encode_rad_error_by_sin = True # TODO:  pass through
+        if encode_rad_error_by_sin:
+            # sin(a - b) = sinacosb-cosasinb
+            # TODO: double check
+            self.box_preds, self.reg_targets = self.add_sin_difference(self.box_preds, self.reg_targets)
+
+    def reshape(self, bottom, top):
+        #reshape to caffe pattern
+        self.box_preds = np.transpose(self.box_preds, (0,2,1))
+        self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
+        top[0].reshape(*self.box_preds.shape)
+        top[1].reshape(*self.reg_targets.shape)
+
+    def forward(self, bottom, top):
+        pass
+
+    def add_sin_difference(self, boxes1, boxes2):
+        rad_pred_encoding = np.sin(boxes1[..., -1:]) * np.cos(
+            boxes2[..., -1:])
+        rad_tg_encoding = np.cos(boxes1[..., -1:]) * np.sin(boxes2[..., -1:])
+        boxes1 = np.concatenate([boxes1[..., :-1], rad_pred_encoding], axis=-1)
+        boxes2 = np.concatenate([boxes2[..., :-1], rad_tg_encoding], axis=-1)
+        return boxes1, boxes2
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+class TestLayer(caffe.Layer):
+
+    def setup(self, bottom, top):
+        self.cls_preds = bottom[0].data
+        # self.labels = bottom[1].data
+        # self.cared = bottom[2].data
+    def reshape(self, bottom, top):
+        top[0].reshape(*self.cls_preds.shape)
+
+    def forward(self, bottom, top):
+        pass
+    def backward(self, top, propagate_down, bottom):
+        pass
+
 class WeightedSmoothL1LocalizationLoss(caffe.Layer):
 
     def setup(self, bottom, top):

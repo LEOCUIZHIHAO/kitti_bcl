@@ -843,10 +843,10 @@ layer {
   top: "rpn_out"
 }
 layer {
-  name: "cls_preds"
+  name: "Convolution1"
   type: "Convolution"
   bottom: "rpn_out"
-  top: "cls_preds"
+  top: "Convolution1"
   param {
     lr_mult: 1.0
   }
@@ -870,10 +870,35 @@ layer {
   }
 }
 layer {
-  name: "box_preds"
+  name: "PrepareLossWeight"
+  type: "Python"
+  bottom: "labels"
+  top: "cls_weights"
+  top: "reg_weights"
+  top: "cared"
+  python_param {
+    module: "custom_layers"
+    layer: "PrepareLossWeight"
+  }
+}
+layer {
+  name: "ClsLossCreate"
+  type: "Python"
+  bottom: "Convolution1"
+  bottom: "labels"
+  bottom: "cared"
+  top: "cls_preds"
+  top: "_labels"
+  python_param {
+    module: "custom_layers"
+    layer: "ClsLossCreate"
+  }
+}
+layer {
+  name: "Convolution2"
   type: "Convolution"
   bottom: "rpn_out"
-  top: "box_preds"
+  top: "Convolution2"
   param {
     lr_mult: 1.0
   }
@@ -897,16 +922,28 @@ layer {
   }
 }
 layer {
+  name: "RegLossCreate"
+  type: "Python"
+  bottom: "Convolution2"
+  bottom: "reg_targets"
+  top: "box_preds"
+  top: "_reg_targets"
+  python_param {
+    module: "custom_layers"
+    layer: "RegLossCreate"
+  }
+}
+layer {
   name: "cls_loss"
   type: "FocalLoss"
   bottom: "cls_preds"
-  bottom: "labels"
+  bottom: "_labels"
   top: "cls_loss"
 }
 layer {
   name: "reg_loss"
   type: "SmoothL1Loss"
-  bottom: "reg_targets"
   bottom: "box_preds"
+  bottom: "_reg_targets"
   top: "reg_loss"
 }

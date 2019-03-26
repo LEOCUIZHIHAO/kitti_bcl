@@ -134,18 +134,19 @@ def caf_model(network, exp_dir, args):
                                            base_lr= 0.0001,
                                            gamma= 0.1,
                                            stepsize= 20,
-                                           test_iter= 1, # 10
+                                           test_iter= 10, # 10
                                            test_interval=1,
-                                           max_iter=2, #2000
+                                           max_iter=2000, #2000
                                            snapshot=20,
                                            solver_type='ADAM',
                                            weight_decay=0.001,
-                                           iter_size=1,
+                                           iter_size=2,
                                            debug_info=debug_info,
                                            random_seed=random_seed,
                                            save_path=os.path.join(exp_dir, 'solver.prototxt'))
     solver = caffe.get_solver(solver)
-    print("[flag-----1] ")
+    print("[CAFF SOLVER INIT ] ")
+
     # if args.init_model:
     #     if args.init_model.endswith('.caffemodel'):
     #         solver.net.copy_from(args.init_model)
@@ -158,6 +159,9 @@ def caf_model(network, exp_dir, args):
     #     else:
     #         solver.restore(os.path.join(exp_dir, 'snapshot_iter_{}.solverstate'.format(args.init_state)))
     solver.solve()
+    print("[CAFF SOLVER DONE DONE DONE ] ")
+
+    exit()
 
 def train(config_path,
           model_dir,
