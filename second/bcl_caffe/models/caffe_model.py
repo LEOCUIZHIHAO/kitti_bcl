@@ -423,9 +423,13 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
     # n['Loss'] = L.Python(n.reg_targets, n.labels, n['box_preds'], n['cls_preds'],
     #                     name='Loss_test',
     #                     python_param=dict(module='custom_layers', layer='CreateLoss'))
-    print("*"*100)
-    n['cls_loss'] = L.FocalLoss(n['cls_preds'], n.labels)
-    n['reg_loss'] = L.SmoothL1Loss(n.reg_targets, n['box_preds'])
+    # print("*"*100)
+
+    n['reshape_pred'] = L.Python(n.labels, n['cls_preds'], ntop=1,
+                                      python_param=dict(module='custom_layers', layer='Reshape'))
+
+    n['cls_loss'] = L.FocalLoss(n['reshape_pred'],n.labels)
+    # n['reg_loss'] = L.SmoothL1Loss(n.reg_targets, n['box_preds'])
     # n['Reg_Loss'] = L.Python(n.reg_targets, n['box_preds'], n.labels,
     #                     name='Reg_Loss',
     #                     python_param=dict(module='custom_layers', layer='WeightedSmoothL1LocalizationLoss'))

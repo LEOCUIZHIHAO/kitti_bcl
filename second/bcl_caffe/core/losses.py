@@ -90,7 +90,7 @@ class Loss(object):
       loss: a tensor representing the value of the loss function.
     """
     if ignore_nan_targets:
-      target_tensor = torch.where(torch.isnan(target_tensor),
+      target_tensor = np.where(np.isnan(target_tensor),
                                 prediction_tensor,
                                 target_tensor)
     return self._compute_loss(prediction_tensor, target_tensor, **params)
@@ -120,7 +120,7 @@ class WeightedL2LocalizationLoss(Loss):
     super().__init__()
     if code_weights is not None:
       self._code_weights = np.array(code_weights, dtype=np.float32)
-      self._code_weights = Variable(torch.from_numpy(self._code_weights).cuda())
+      # self._code_weights = Variable(torch.from_numpy(self._code_weights).cuda())
     else:
       self._code_weights = None
 
@@ -140,10 +140,10 @@ class WeightedL2LocalizationLoss(Loss):
     """
     diff = prediction_tensor - target_tensor
     if self._code_weights is not None:
-      self._code_weights = self._code_weights.type_as(prediction_tensor)
-      self._code_weights = self._code_weights.view(1, 1, -1)
+      # self._code_weights = self._code_weights.type_as(prediction_tensor)
+      self._code_weights = self._code_weights.reshape(1, 1, -1)
       diff = self._code_weights * diff
-    weighted_diff = diff * weights.unsqueeze(-1)
+    weighted_diff = diff * weights.expand_dims(-1)
     square_diff = 0.5 * weighted_diff * weighted_diff
     return square_diff.sum(2)
 
@@ -160,7 +160,7 @@ class WeightedSmoothL1LocalizationLoss(Loss):
     self._sigma = sigma
     if code_weights is not None:
       self._code_weights = np.array(code_weights, dtype=np.float32)
-      self._code_weights = Variable(torch.from_numpy(self._code_weights).cuda())
+      # self._code_weights = Variable(torch.from_numpy(self._code_weights).cuda())
     else:
       self._code_weights = None
     self._codewise = codewise
@@ -180,26 +180,26 @@ class WeightedSmoothL1LocalizationLoss(Loss):
     """
     diff = prediction_tensor - target_tensor
     if self._code_weights is not None:
-      code_weights = self._code_weights.type_as(prediction_tensor)
-      diff = code_weights.view(1, 1, -1) * diff
-    abs_diff = torch.abs(diff)
-    abs_diff_lt_1 = torch.le(abs_diff, 1 / (self._sigma**2)).type_as(abs_diff)
-    loss = abs_diff_lt_1 * 0.5 * torch.pow(abs_diff * self._sigma, 2) \
+      code_weights = self._code_weights #.type_as(prediction_tensor)
+      diff = code_weights.reshape(1, 1, -1) * diff
+    abs_diff = np.absolute(diff)
+    abs_diff_lt_1 = (abs_diff <= 1 / (self._sigma**2)).astype(np.int)
+    loss = abs_diff_lt_1 * 0.5 * np.power(abs_diff * self._sigma, 2) \
       + (abs_diff - 0.5 / (self._sigma**2)) * (1. - abs_diff_lt_1)
     if self._codewise:
       anchorwise_smooth_l1norm = loss
       if weights is not None:
-        anchorwise_smooth_l1norm *= weights.unsqueeze(-1)
+        anchorwise_smooth_l1norm *= np.expand_dims(weights,-1)
     else:
-      anchorwise_smooth_l1norm = torch.sum(loss, 2)#  * weights
+      anchorwise_smooth_l1norm = np.sum(loss, 2)#  * weights
       if weights is not None:
         anchorwise_smooth_l1norm *= weights
     return anchorwise_smooth_l1norm
 
 def _sigmoid_cross_entropy_with_logits(logits, labels):
   # to be compatible with tensorflow, we don't use ignore_idx
-  loss = torch.clamp(logits, min=0) - logits * labels.type_as(logits)
-  loss += torch.log1p(torch.exp(-torch.abs(logits)))
+  loss = np.clip(logits, a_min=0, a_max = None) - logits * labels.astype(logits.dtype)
+  loss += np.log1p(np.exp(-np.absolute(logits)))
   # transpose_param = [0] + [param[-1]] + param[1:-1]
   # logits = logits.permute(*transpose_param)
   # loss_ftor = nn.NLLLoss(reduce=False)
@@ -286,18 +286,23 @@ class SigmoidFocalClassificationLoss(Loss):
       loss: a float tensor of shape [batch_size, num_anchors, num_classes]
         representing the value of the loss function.
     """
-    weights = weights.unsqueeze(2)
+    weights = np.expand_dims(weights, 2)
     if class_indices is not None:
       weights *= indices_to_dense_vector(class_indices,
-            prediction_tensor.shape[2]).view(1, 1, -1).type_as(prediction_tensor)
+            prediction_tensor.shape[2]).reshape(1, 1, -1)# .type_as(prediction_tensor)
     per_entry_cross_ent = (_sigmoid_cross_entropy_with_logits(
         labels=target_tensor, logits=prediction_tensor))
-    prediction_probabilities = torch.sigmoid(prediction_tensor)
+    def sigmoid(x, derivative=False):
+        sigm = 1. / (1. + np.exp(-x))
+        if derivative:
+            return sigm * (1. - sigm)
+        return sigm
+    prediction_probabilities = sigmoid(prediction_tensor)
     p_t = ((target_tensor * prediction_probabilities) +
            ((1 - target_tensor) * (1 - prediction_probabilities)))
     modulating_factor = 1.0
     if self._gamma:
-      modulating_factor = torch.pow(1.0 - p_t, self._gamma)
+      modulating_factor = np.power(1.0 - p_t, self._gamma)
     alpha_weight_factor = 1.0
     if self._alpha is not None:
       alpha_weight_factor = (target_tensor * self._alpha +
@@ -361,8 +366,8 @@ class SoftmaxFocalClassificationLoss(Loss):
       modulating_factor = torch.pow(1.0 - p_t, self._gamma)
     alpha_weight_factor = 1.0
     if self._alpha is not None:
-      alpha_weight_factor = torch.where(target_tensor[..., 0] == 1, 
-      torch.tensor(1 - self._alpha).type_as(per_entry_cross_ent), 
+      alpha_weight_factor = torch.where(target_tensor[..., 0] == 1,
+      torch.tensor(1 - self._alpha).type_as(per_entry_cross_ent),
       torch.tensor(self._alpha).type_as(per_entry_cross_ent))
     focal_cross_entropy_loss = (modulating_factor * alpha_weight_factor *
                                 per_entry_cross_ent)
@@ -463,4 +468,3 @@ class BootstrappedSigmoidClassificationLoss(Loss):
     per_entry_cross_ent = (_sigmoid_cross_entropy_with_logits(
         labels=bootstrap_target_tensor, logits=prediction_tensor))
     return per_entry_cross_ent * weights.unsqueeze(2)
-

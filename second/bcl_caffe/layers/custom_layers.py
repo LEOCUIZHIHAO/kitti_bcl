@@ -264,20 +264,31 @@ class PointPillarsScatter(caffe.Layer):
         pass
 
 
+class Reshape(caffe.Layer):
+    def setup(self, bottom, top):
+        top[0].reshape(*bottom[0].data.shape)
+
+    def reshape(self, bottom,top):
+        pass
+
+    def forward(self, bottom, top):
+        label = bottom[0].data
+        print("reshape label.shape: ", label.shape)
+        predict = bottom[1].data
+        print("reshape predict.shape: ", predict.shape)
+        predict = predict.reshape(label.shape)
+        print("reshape predit.shape: ", predict.shape)
+        top[0].data[...] = predict
+        # exit()
+
+    def backward(self, bottom, top):
+        pass
+
+
 class CreateLoss(caffe.Layer):
 
     def setup(self, bottom, top):
-
-        reg_targets = bottom[0].data
-        labels = bottom[1].data
-        box_preds = bottom[2].data
-        cls_preds = bottom[3].data
-
-        cls_weights, reg_weights, cared = self.prepare_loss_weights(labels)
-
-        cls_targets = labels * cared
-        cls_targets = np.expand_dims(cls_targets, -1).astype(int)
-
+        print("####Loss setup")
         ####read proto
         config = pipeline_pb2.TrainEvalPipelineConfig()
         with open('configs/pointpillars/car/xyres_16.proto', "r") as f:
@@ -285,9 +296,34 @@ class CreateLoss(caffe.Layer):
             text_format.Merge(proto_str, config)
         loss_config = config.model.second.loss
         #######################################
-        cls_loss_ftor, loc_loss_ftor, cls_loss_weight, loc_loss_weight, _ = losses_builder._build_loss(loss_config)
+        '''stay in setup'''
+        self.cls_loss_ftor, self.loc_loss_ftor, self.cls_loss_weight, self.loc_loss_weight, _ = losses_builder._build_loss(loss_config)
+        """
+        task breakdown:
+        Get cls_weights, reg_weights, cared from prepareloss;
+        Get labels and reg_targets
+        """
+        # Should be in forward
+
+    def reshape(self, bottom, top):
+        print("####Loss reshape")
+        pass
+
+    def forward(self, bottom, top):
+        reg_targets = bottom[0].data
+        labels = bottom[1].data
+        box_preds = bottom[2].data
+        cls_preds = bottom[3].data
+
+        # should be in forward
+        cls_weights, reg_weights, cared = self.prepare_loss_weights(labels)
+
+        cls_targets = labels * cared
+        cls_targets = np.expand_dims(cls_targets, -1).astype(int)
 
         cls_losses, loc_losses = self.create_loss(
+                                    self.loc_loss_ftor,
+                                    self.cls_loss_ftor,
                                     box_preds=box_preds,
                                     cls_preds=cls_preds,
                                     cls_targets=cls_targets,
@@ -297,32 +333,28 @@ class CreateLoss(caffe.Layer):
                                     num_class=1, ## TODO:
                                     encode_rad_error_by_sin= True, # TODO:  pass #self._encode_rad_error_by_sin,
                                     encode_background_as_zeros= True, #self._encode_background_as_zeros,
-                                    box_code_size= 7,) #self._box_coder.code_size,)
-        # pos_cls_weight = 1
-        # neg_cls_weight = 1
-        # batch_size = 2 ## TODO:  pass param to here
-        #
-        # loc_loss_reduced = loc_loss.sum() / batch_size
-        # loc_loss_reduced *= loc_loss_weight
-        # cls_pos_loss, cls_neg_loss = self.get_pos_neg_loss(cls_loss, labels)
-        # cls_pos_loss /= pos_cls_weight
-        # cls_neg_loss /= neg_cls_weight
-        # cls_loss_reduced = cls_loss.sum() / batch_size
-        # cls_loss_reduced *= cls_loss_weight
-        # loss = loc_loss_reduced + cls_loss_reduced
+                                    box_code_size= 7) #self._box_coder.code_size,)
+        pos_cls_weight = 1
+        neg_cls_weight = 1
+        batch_size = 2 ## TODO:  pass param to here
 
-        print(loss)
-        exit()
-        pass
-
-    def reshape(self, bottom, top):
-        pass
-
-    def forward(self, bottom, top):
-        pass
+        loc_loss_reduced = loc_losses.sum() / batch_size
+        loc_loss_reduced *= self.loc_loss_weight
+        cls_pos_loss, cls_neg_loss = self.get_pos_neg_loss(cls_losses, labels)
+        cls_pos_loss /= pos_cls_weight
+        cls_neg_loss /= neg_cls_weight
+        cls_loss_reduced = cls_losses.sum() / batch_size
+        cls_loss_reduced *= self.cls_loss_weight
+        self.loss = loc_loss_reduced + cls_loss_reduced
+        top[0].reshape(*self.loss.shape)
+        top[0].data[...] = self.loss
+        print("####Loss forward")
 
     def backward(self, top, propagate_down, bottom):
-        pass
+        print("####Loss backward")
+        bottom[0].diff[...] = self.loss
+        bottom[1].diff[...] = self.loss
+
 
     def add_sin_difference(self, boxes1, boxes2):
         rad_pred_encoding = np.sin(boxes1[..., -1:]) * np.cos(
@@ -419,9 +451,9 @@ class CreateLoss(caffe.Layer):
         # labels: [N, num_anchors]
         batch_size = cls_loss.shape[0]
         if cls_loss.shape[-1] == 1 or len(cls_loss.shape) == 2:
-            cls_pos_loss = (labels > 0).type_as(cls_loss) * cls_loss.view(
+            cls_pos_loss = (labels > 0).astype(cls_loss.dtype) * cls_loss.reshape(
                 batch_size, -1)
-            cls_neg_loss = (labels == 0).type_as(cls_loss) * cls_loss.view(
+            cls_neg_loss = (labels == 0).astype(cls_loss.dtype) * cls_loss.reshape(
                 batch_size, -1)
             cls_pos_loss = cls_pos_loss.sum() / batch_size
             cls_neg_loss = cls_neg_loss.sum() / batch_size
