@@ -429,26 +429,40 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                               param=[dict(lr_mult=1), dict(lr_mult=0.1)])
 
 
-    n['cls_weights'], n['reg_weights'], n['cared'] = L.Python(n.labels,
-                                                            name = "PrepareLossWeight",
-                                                            ntop = 3,
-                                                            python_param=dict(
-                                                                        module='custom_layers',
-                                                                        layer='PrepareLossWeight',
-                                                                        ))
+    # n['cls_weights'], n['reg_weights'],
+    n['cared'] = L.Python(n.labels,
+                            name = "PrepareLossWeight",
+                            ntop = 1,
+                            python_param=dict(
+                                        module='custom_layers',
+                                        layer='PrepareLossWeight',
+                                        ))
 
     # n['label_']  = L.Python(n.labels, name = "TestLayer", ntop=1, python_param=dict(
     #                                                                                             module='custom_layers',
     #                                                                                             layer='TestLayer',
     #                                                                                             ))
-    n['cls_preds'], n['_labels'] = L.Python(n['cls_preds'], n.labels, n['cared'],
-                                                                    name = "ClsLossCreate",
-                                                                    ntop=2,
+    # n['_labels'] = L.Python(n['cls_preds'], n.labels, n['cared'],
+    #                                                                 name = "ClsLossCreate",
+    #                                                                 ntop=1,
+    #                                                                 python_param=dict(
+    #                                                                             module='custom_layers',
+    #                                                                             layer='ClsLossCreate',
+    #                                                                             ))
+
+    n['_labels'] = L.Python(n.labels, n['cared'], name = "label_encode",
+                                                                    ntop=1,
                                                                     python_param=dict(
                                                                                 module='custom_layers',
-                                                                                layer='ClsLossCreate',
+                                                                                layer='LabelEncode',
                                                                                 ))
-    #
+
+    n['cls_preds'] = L.Python(n['cls_preds'], name = "ClsLossCreate", ntop=1,
+                                                                    python_param=dict(
+                                                                                module='custom_layers',
+                                                                                layer='PredReshape',
+                                                                                ))
+
     n['box_preds'], n['_reg_targets'] = L.Python(n['box_preds'], n.reg_targets,
                                                         name = "RegLossCreate",
                                                         ntop=2,
@@ -456,9 +470,10 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                         module='custom_layers',
                                                         layer='RegLossCreate',
                                                         ))
-    #
+
     n['cls_loss'] = L.FocalLoss(n['cls_preds'], n['_labels'])
     n['reg_loss'] = L.SmoothL1Loss(n['box_preds'], n['_reg_targets'])
+
 
     # n['cls_loss'] = L.FocalLoss(n['_labels'], n['cls_preds'])
     # n['reg_loss'] = L.SmoothL1Loss(n['_reg_targets'], n['box_preds'])

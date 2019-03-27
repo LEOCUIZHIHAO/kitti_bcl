@@ -439,12 +439,19 @@ class PrepareLossWeight(caffe.Layer):
         self.cls_weights, self.reg_weights, self.cared = self.prepare_loss_weights(self.labels)
 
     def reshape(self, bottom, top):
-        top[0].reshape(*self.cls_weights.shape)
-        top[1].reshape(*self.reg_weights.shape)
-        top[2].reshape(*self.cared.shape)
-        pass
+        # top[0].reshape(*self.cls_weights.shape)
+        # top[1].reshape(*self.reg_weights.shape)
+        top[0].reshape(*self.cared.shape)
+
     def forward(self, bottom, top):
-        pass
+        # print("#######PrepareLossWeight forward")
+        self.labels = bottom[0].data
+        self.cls_weights, self.reg_weights, self.cared = self.prepare_loss_weights(self.labels)
+        # top[0].data[...] = self.cls_weights
+        # top[1].data[...] = self.reg_weights
+        top[0].data[...] = self.cared
+        # print("#######PrepareLossWeight end")
+
     def prepare_loss_weights(self, labels,
                             pos_cls_weight=1.0, # TODO: pass params here
                             neg_cls_weight=1.0,
@@ -489,7 +496,7 @@ class PrepareLossWeight(caffe.Layer):
 
 class ClsLossCreate(caffe.Layer):
     def setup(self, bottom, top):
-
+        print("#######ClsLossCreate setup")
         self.cls_preds = bottom[0].data
         self.labels = bottom[1].data
         self.cared = bottom[2].data
@@ -513,21 +520,119 @@ class ClsLossCreate(caffe.Layer):
         self.one_hot_targets = np.eye(num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
         if encode_background_as_zeros:
             self.one_hot_targets = self.one_hot_targets[..., 1:]
+        print("#######ClsLossCreate setup")
         # print("[debug] one_hot_targets shape", self.one_hot_targets.shape)
 
     def reshape(self, bottom, top):
         #reshape to caffe pattern
+        print("#######ClsLossCreate reshape")
         self.one_hot_targets = np.transpose(self.one_hot_targets, (0,2,1))
-        top[0].reshape(*self.cls_preds.shape)
-        top[1].reshape(*self.one_hot_targets.shape)
-        pass
+        top[0].reshape(*self.one_hot_targets.shape)
+        top[1].reshape(*self.cls_preds.shape)
+        # top[0].reshape(*self.one_hot_targets.shape)
+
+
     def forward(self, bottom, top):
+        print("#######ClsLossCreate forward")
+
+    def backward(self, top, propagate_down, bottom):
         pass
+
+class LabelEncode(caffe.Layer):
+    def setup(self, bottom, top):
+        print("#######ClsLossCreate setup")
+        self.labels = bottom[0].data
+        self.cared = bottom[1].data
+
+        cls_targets = self.labels * self.cared
+        cls_targets = np.expand_dims(cls_targets, -1).astype(int)
+
+        encode_background_as_zeros=True
+        batch_size = 2
+        num_class = 1
+
+        cls_targets = np.squeeze(cls_targets, -1) # cls_targets.squeeze(-1)
+        # print("[debug] cls_targets shape", cls_targets.shape)
+        self.one_hot_targets = np.eye(num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
+        if encode_background_as_zeros:
+            self.one_hot_targets = self.one_hot_targets[..., 1:]
+        self.one_hot_targets = np.transpose(self.one_hot_targets, (0,2,1))
+        top[0].reshape(*self.one_hot_targets.shape)
+
+        # print("[debug] one_hot_targets shape", self.one_hot_targets.shape)
+
+    def reshape(self, bottom, top):
+        #reshape to caffe pattern
+        print("#######ClsLossCreate reshape")
+        # top[0].reshape(*self.one_hot_targets.shape)
+        # top[1].reshape(*self.cls_preds.shape)
+
+
+    def forward(self, bottom, top):
+        print("#######ClsLossCreate forward")
+        self.labels = bottom[0].data
+        self.cared = bottom[1].data
+
+        cls_targets = self.labels * self.cared
+        cls_targets = np.expand_dims(cls_targets, -1).astype(int)
+
+        encode_background_as_zeros=True
+        batch_size = 2
+        num_class = 1
+
+        cls_targets = np.squeeze(cls_targets, -1) # cls_targets.squeeze(-1)
+        # print("[debug] cls_targets shape", cls_targets.shape)
+        self.one_hot_targets = np.eye(num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
+        if encode_background_as_zeros:
+            self.one_hot_targets = self.one_hot_targets[..., 1:]
+        self.one_hot_targets = np.transpose(self.one_hot_targets, (0,2,1))
+        top[0].data[...] = self.one_hot_targets
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+class PredReshape(caffe.Layer):
+    def setup(self, bottom, top):
+        print("#######PredReshape setup")
+        self.cls_preds = bottom[0].data
+
+
+        encode_background_as_zeros=True, # TODO: pass through
+        batch_size = 2
+        num_class = 1
+
+        # print("[debug] cls_preds shape", cls_preds.shape)
+        if encode_background_as_zeros:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class, -1)
+        else:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class + 1, -1)
+        # print("[debug] cls_preds shape after", self.cls_preds.shape)
+
+    def reshape(self, bottom, top):
+        #reshape to caffe pattern
+        print("#######PredReshape reshape")
+        top[0].reshape(*self.cls_preds.shape)
+
+
+    def forward(self, bottom, top):
+        print("#######PredReshape forward")
+        self.cls_preds = bottom[0].data
+        encode_background_as_zeros=True, # TODO: pass through
+        batch_size = 2
+        num_class = 1
+        # print("[debug] cls_preds shape", cls_preds.shape)
+        if encode_background_as_zeros:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class, -1)
+        else:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class + 1, -1)
+        top[0].data[...] = self.cls_preds
+
     def backward(self, top, propagate_down, bottom):
         pass
 
 class RegLossCreate(caffe.Layer):
     def setup(self, bottom, top):
+        print("#######RegLossCreate setup")
 
         box_code_size = 7
         self.box_preds = bottom[0].data
@@ -540,16 +645,36 @@ class RegLossCreate(caffe.Layer):
             # sin(a - b) = sinacosb-cosasinb
             # TODO: double check
             self.box_preds, self.reg_targets = self.add_sin_difference(self.box_preds, self.reg_targets)
-
-    def reshape(self, bottom, top):
-        #reshape to caffe pattern
         self.box_preds = np.transpose(self.box_preds, (0,2,1))
         self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
         top[0].reshape(*self.box_preds.shape)
         top[1].reshape(*self.reg_targets.shape)
 
+    def reshape(self, bottom, top):
+        print("#######RegLossCreate reshape")
+        #reshape to caffe pattern
+        # self.box_preds = np.transpose(self.box_preds, (0,2,1))
+        # self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
+        # top[0].reshape(*self.box_preds.shape)
+        # top[1].reshape(*self.reg_targets.shape)
+
     def forward(self, bottom, top):
-        pass
+        print("#######RegLossCreate forward")
+        box_code_size = 7
+        self.box_preds = bottom[0].data
+        self.reg_targets = bottom[1].data
+        batch_size = int(self.box_preds.shape[0])
+        self.box_preds = self.box_preds.reshape(batch_size, -1, box_code_size)
+
+        encode_rad_error_by_sin = True # TODO:  pass through
+        if encode_rad_error_by_sin:
+            # sin(a - b) = sinacosb-cosasinb
+            # TODO: double check
+            self.box_preds, self.reg_targets = self.add_sin_difference(self.box_preds, self.reg_targets)
+        self.box_preds = np.transpose(self.box_preds, (0,2,1))
+        self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
+        top[0].data[...] = self.box_preds
+        top[1].data[...] = self.reg_targets
 
     def add_sin_difference(self, boxes1, boxes2):
         rad_pred_encoding = np.sin(boxes1[..., -1:]) * np.cos(
