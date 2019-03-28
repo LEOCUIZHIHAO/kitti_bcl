@@ -653,7 +653,9 @@ class VoxelNet(nn.Module):
         # features: [num_voxels, max_num_points_per_voxel, 7]
         # num_points: [num_voxels]
         # coors: [num_voxels, 4]
+        #print("[debug] voxel", voxels.shape)
         voxel_features = self.voxel_feature_extractor(voxels, num_points, coors)
+        #print("[debug] voxel feature ", voxel_features.shape)
         if self._use_sparse_rpn:
             preds_dict = self.rpn(voxel_features, coors, batch_size_dev)
 
@@ -696,6 +698,8 @@ class VoxelNet(nn.Module):
                 encode_background_as_zeros=self._encode_background_as_zeros,
                 box_code_size=self._box_coder.code_size,
             )
+            print("loc loss", loc_loss.sum())
+            print("cls loss", cls_loss.sum())
             loc_loss_reduced = loc_loss.sum() / batch_size_dev
             loc_loss_reduced *= self._loc_loss_weight
             cls_pos_loss, cls_neg_loss = _get_pos_neg_loss(cls_loss, labels)
@@ -1059,6 +1063,9 @@ def create_loss(loc_loss_ftor,
         box_preds, reg_targets, weights=reg_weights)  # [N, M]
     cls_losses = cls_loss_ftor(
         cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
+
+    # print("loc loss", loc_losses)
+    # print("cls loss", cls_losses)
     return loc_losses, cls_losses
 
 

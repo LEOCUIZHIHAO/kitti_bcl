@@ -253,7 +253,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
         n['Mlp'] = L.Convolution(top_prev,
                                              convolution_param=dict(num_output=64,
                                                                     kernel_size=1, stride=1, pad=0,
-                                                                    weight_filler=dict(type = 'xavier',std = 0.1),
+                                                                    weight_filler=dict(type = 'xavier'), #,std = 0.1
                                                                     bias_filler=dict(type='constant', value=0),
                                                                     engine=1,
                                                                     ),
@@ -285,7 +285,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                 bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                         param=[dict(lr_mult=1), dict(lr_mult=2)]) #0.1
 
     top_prev = L.BatchNorm(n['init_conv1'])
     top_prev = L.ReLU(top_prev)
@@ -300,7 +300,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                     bias_filler=dict(type='constant', value=0),
                                                                     engine=1,
                                                                     ),
-                                             param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                             param=[dict(lr_mult=1), dict(lr_mult=2)]) #0.1
 
         top_prev = L.BatchNorm(n['rpn_conv1_' + str(idx)])
         top_prev = L.ReLU(top_prev)
@@ -313,7 +313,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                 bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
 
     deconv1 = L.BatchNorm(n['rpn_deconv1'])
     deconv1 = L.ReLU(deconv1)
@@ -328,7 +328,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                 bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
 
     top_prev = L.BatchNorm(n['init_conv2'])
     top_prev = L.ReLU(top_prev)
@@ -342,7 +342,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                     bias_filler=dict(type='constant', value=0),
                                                                     engine=1,
                                                                     ),
-                                             param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                             param=[dict(lr_mult=1), dict(lr_mult=2)])
 
         top_prev = L.BatchNorm(n['rpn_conv2_' + str(idx)])
         top_prev = L.ReLU(top_prev)
@@ -355,7 +355,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                 bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
 
     deconv2 = L.BatchNorm(n['rpn_deconv2'])
     deconv2 = L.ReLU(deconv2)
@@ -370,7 +370,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                 bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
 
     top_prev = L.BatchNorm(n['init_conv3'])
     top_prev = L.ReLU(top_prev)
@@ -384,7 +384,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                     bias_filler=dict(type='constant', value=0),
                                                                     engine=1,
                                                                     ),
-                                             param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                             param=[dict(lr_mult=1), dict(lr_mult=2)])
 
         top_prev = L.BatchNorm(n['rpn_conv3_' + str(idx)])
         top_prev = L.ReLU(top_prev)
@@ -397,7 +397,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                                 bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
 
     deconv3 = L.BatchNorm(n['rpn_deconv3'])
     deconv3 = L.ReLU(deconv3)
@@ -408,47 +408,58 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
     del deconv1, deconv2, deconv3, top_prev
 
     num_cls = 2
-    n['cls_preds'] = L.Convolution(n['rpn_out'],
+    n['cls_preds'] = L.Convolution(n['rpn_out'], name = "cls_head",
                              convolution_param=dict(num_output=num_cls,
                                                     kernel_size=1, stride=1, pad=0,
                                                     weight_filler=dict(type = 'xavier',std = 0.1),
                                                     bias_filler=dict(type='constant', value=0),
                                                     engine=1,
                                                     ),
-                             param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                             param=[dict(lr_mult=1), dict(lr_mult=2)])
 
     box_code_size = 7
     num_anchor_per_loc = 2
-    n['box_preds'] = L.Convolution(n['rpn_out'],
+    n['box_preds'] = L.Convolution(n['rpn_out'], name = "reg_head",
                               convolution_param=dict(num_output=num_anchor_per_loc * box_code_size,
                                                      kernel_size=1, stride=1, pad=0,
                                                      weight_filler=dict(type = 'xavier',std = 0.1),
                                                      bias_filler=dict(type='constant', value=0),
                                                      engine=1,
                                                      ),
-                              param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                              param=[dict(lr_mult=1), dict(lr_mult=2)])
 
 
-    n['cls_weights'], n['reg_weights'], n['cared'] = L.Python(n.labels,
-                                                            name = "PrepareLossWeight",
-                                                            ntop = 3,
+    #n['cls_weights'],n['reg_weights'],
+    n['cared'] = L.Python(n.labels,
+                                name = "PrepareLossWeight",
+                                ntop = 1,
+                                python_param=dict(
+                                            module='custom_layers',
+                                            layer='PrepareLossWeight'
+                                            ))
+
+
+    # n['_labels'], n['cls_preds']  = L.Python(n.labels, n['cls_preds'], n['cared'],
+    #                                                                 name = "ClsLossCreate",
+    #                                                                 ntop=2,
+    #                                                                 python_param=dict(
+    #                                                                             module='custom_layers',
+    #                                                                             layer='ClsLossCreate',
+    #                                                                             ))
+
+    # Gradients cannot be computed with respect to the label inputs (bottom[1])#
+    n['_labels'] = L.Python(n.labels, n['cared'], name = "Label_Encode",
+                                                                python_param=dict(
+                                                                            module='custom_layers',
+                                                                            layer='LabelEncode',
+                                                                            ))
+
+    n['cls_preds'] = L.Python(n['cls_preds'], name = "Pred_Reshape",
                                                             python_param=dict(
                                                                         module='custom_layers',
-                                                                        layer='PrepareLossWeight',
+                                                                        layer='PredReshape',
                                                                         ))
 
-    # n['label_']  = L.Python(n.labels, name = "TestLayer", ntop=1, python_param=dict(
-    #                                                                                             module='custom_layers',
-    #                                                                                             layer='TestLayer',
-    #                                                                                             ))
-    n['cls_preds'], n['_labels'] = L.Python(n['cls_preds'], n.labels, n['cared'],
-                                                                    name = "ClsLossCreate",
-                                                                    ntop=2,
-                                                                    python_param=dict(
-                                                                                module='custom_layers',
-                                                                                layer='ClsLossCreate',
-                                                                                ))
-    #
     n['box_preds'], n['_reg_targets'] = L.Python(n['box_preds'], n.reg_targets,
                                                         name = "RegLossCreate",
                                                         ntop=2,
@@ -456,9 +467,25 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
                                                         module='custom_layers',
                                                         layer='RegLossCreate',
                                                         ))
-    #
-    n['cls_loss'] = L.FocalLoss(n['cls_preds'], n['_labels'])
-    n['reg_loss'] = L.SmoothL1Loss(n['box_preds'], n['_reg_targets'])
+
+    # n['box_preds'] = L.Python(n['box_preds'],
+    #                                 name = "RegPredLossCreate",
+    #                                 python_param=dict(
+    #                                 module='custom_layers',
+    #                                 layer='RegPredLossCreate',
+    #                                 ))
+    # n['_reg_targets'] = L.Python(n.reg_targets,
+    #                                 name = "RegLabelLossCreate",
+    #                                 python_param=dict(
+    #                                 module='custom_layers',
+    #                                 layer='RegLabelLossCreate',
+    #                                 ))
+
+
+    n['cls_loss'] = L.FocalLoss(n['cls_preds'], n['_labels'], focal_loss_param=dict(axis=1, alpha=0.25, gamma=2.0))
+
+    n['reg_loss'] = L.SmoothL1Loss(n['box_preds'], n['_reg_targets'], loss_weight = 1, smooth_l1_loss_param=dict(sigma=1)) #, n['reg_weights']
+
 
     # n['cls_loss'] = L.FocalLoss(n['_labels'], n['cls_preds'])
     # n['reg_loss'] = L.SmoothL1Loss(n['_reg_targets'], n['box_preds'])
@@ -476,6 +503,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
     if create_prototxt:
         net = get_prototxt(net, save_path)
 
+    return net
     # n.data_feat = L.Python(n.data, python_param=dict(module='custom_layers', layer='PickAndScale',
     #                                                  param_str=feat_dims_str))
     # top_prev = n.data_feat
@@ -620,5 +648,3 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
     #
     # if create_prototxt:
     #     net = get_prototxt(net, save_path)
-
-    return net

@@ -77,33 +77,66 @@ class InputKittiData(caffe.Layer):
         self.features *= mask
         ########################################################################
 
-        # voxel_num = self.voxels.shape[0]
-        # max_points_in_voxels = self.voxels.shape[1]
-        #self.features = self.features.reshape(1, voxel_num, max_points_in_voxels, -1,).transpose(0,3,1,2)
-        #self.data = features
-        #top[0].reshape(*features.shape)
-
     def reshape(self, bottom, top):
-        print("flag - reshape")
+
         voxel_num = self.voxels.shape[0]
         max_points_in_voxels = self.voxels.shape[1]
         self.features = self.features.reshape(1, voxel_num, max_points_in_voxels, -1).transpose(0,3,1,2)
-        top[0].reshape(*self.features.shape) #[1,9,7000,100]
 
+        top[0].reshape(*self.features.shape) #[1,9,7000,100]
         # self.coors = self.coors.reshape(1,1,voxel_num,-1) #[1, 1, 7000, 4]
         top[1].reshape(*self.coors.shape) #[7000,4]
         top[2].reshape(*self.labels.shape) #[2 107136]
         top[3].reshape(*self.reg_targets.shape) #[]
-        pass
 
     def forward(self, bottom, top):
-        print("[flag -forward]")
+        # print("[flag -forward]")
+        example = self.prep_and_read_kitti()
+        self.voxels = example['voxels']
+        self.coors = example['coordinates']
+        self.num_points = example['num_points']
+        self.labels = example['labels']
+        self.reg_targets =example['reg_targets']
+
+        points_mean = np.sum(self.voxels[:, :, :3], axis=1, keepdims=True) / self.num_points.reshape(-1,1,1)
+        f_cluster = self.voxels[:, :, :3] - points_mean
+
+        # Find distance of x, y, and z from pillar center
+        f_center = self.voxels[:, :, :2]
+        f_center[:, :, 0] = f_center[:, :, 0] - (np.expand_dims(self.coors[:, 3].astype(float), axis=1) * self.vx + self.x_offset)
+        f_center[:, :, 1] = f_center[:, :, 1] - (np.expand_dims(self.coors[:, 2].astype(float), axis=1) * self.vy + self.y_offset)
+
+        features_ls = [self.voxels, f_cluster, f_center]
+        self.features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
+
+        # The feature decorations were calculated without regard to whether pillar was empty. Need to ensure that
+        # empty pillars remain set to zeros.
+
+        # TODO:  double check !!!!!!!!!!!!
+        points_per_voxels = self.features.shape[1]
+        mask = get_paddings_indicator_caffe(self.num_points, points_per_voxels, axis=0)
+        #mask = torch.unsqueeze(mask, -1).type_as(features)
+        mask = np.expand_dims(mask, axis=-1)
+        self.features *= mask
+
+        #reshape
+        voxel_num = self.voxels.shape[0]
+        max_points_in_voxels = self.voxels.shape[1]
+        self.features = self.features.reshape(1, voxel_num, max_points_in_voxels, -1).transpose(0,3,1,2)
+
+        top[0].reshape(*self.features.shape) #[1,9,7000,100]
+        top[1].reshape(*self.coors.shape) #[7000,4]
+        top[2].reshape(*self.labels.shape) #[2 107136]
+        top[3].reshape(*self.reg_targets.shape) #[]
+
+        print("[debug] image index : ", example["image_idx"])
+        #######################################################################
         top[0].data[...] = self.features
         top[1].data[...] = self.coors
         top[2].data[...] = self.labels
         top[3].data[...] = self.reg_targets
 
-        print("[flag -forward done]")
+        # print("[flag -forward done]")
 
     def backward(self, top, propagate_down, bottom):
         pass
@@ -163,13 +196,14 @@ class InputKittiData(caffe.Layer):
             voxel_generator=voxel_generator,
             target_assigner=target_assigner)
 
+        ## TODO: check if data_iter is rotating
         data_iter = iter(dataset)
 
         # merge batch
         example_batch = []
         for _ in range(self.batch_size):
             example = next(data_iter)
-            print("[debug] image_idx" , example["image_idx"])
+            # print("[debug] image_idx" , example["image_idx"])
             example_batch.append(example)
 
         ret = self.merge_second_batch(example_batch)
@@ -212,12 +246,12 @@ class PointPillarsScatter(caffe.Layer):
     def setup(self, bottom, top):
 
         param = eval(self.param_str)
-        output_shape = param['output_shape']
-        num_input_features = param['num_input_features']
+        self.output_shape = param['output_shape']
+        self.num_input_features = param['num_input_features']
 
-        self.ny = output_shape[2]
-        self.nx = output_shape[3]
-        self.nchannels = num_input_features
+        self.ny = self.output_shape[2]
+        self.nx = self.output_shape[3]
+        self.nchannels = self.num_input_features
         self.batch_size = 2 # TODO: pass batch to here
 
         voxel_features = bottom[0].data
@@ -252,13 +286,53 @@ class PointPillarsScatter(caffe.Layer):
         # Undo the column stacking to final 4-dim tensor
         self.batch_canvas = self.batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
 
-    def reshape(self, bottom, top):
         top[0].reshape(*self.batch_canvas.shape)
 
+    def reshape(self, bottom, top):
+        pass
+
     def forward(self, bottom, top):
-        print("[flag -scater forward start]")
+
+        self.ny = self.output_shape[2]
+        self.nx = self.output_shape[3]
+        self.nchannels = self.num_input_features
+        self.batch_size = 2 # TODO: pass batch to here
+
+        voxel_features = bottom[0].data
+        voxel_features = np.transpose(np.squeeze(voxel_features))
+        coords = bottom[1].data
+
+        self.batch_canvas = []
+        for batch_itt in range(self.batch_size):
+            # Create the canvas for this sample
+            canvas = np.zeros(shape=(self.nchannels, self.nx * self.ny))
+
+            # Only include non-empty pillars
+            batch_mask = coords[:, 0] == batch_itt
+            this_coords = coords[batch_mask, :]
+            indices = this_coords[:, 2] * self.nx + this_coords[:, 3]
+            indices = indices.astype(int)
+            voxels = voxel_features[batch_mask, :]
+            voxels = np.transpose(voxels)
+
+            _coors = coords[batch_mask, :]
+            _coors = np.transpose(_coors)
+
+            # Now scatter the blob back to the canvas.
+            canvas[:, indices] = voxels
+
+            # Append to a list for later stacking.
+            self.batch_canvas.append(canvas)
+
+        # Stack to 3-dim tensor (batch-size, nchannels, nrows*ncols)
+        self.batch_canvas = np.stack(self.batch_canvas, 0)
+
+        # Undo the column stacking to final 4-dim tensor
+        self.batch_canvas = self.batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
+
+        print("[debug] self.batch_canvas ", self.batch_canvas.shape)
+
         top[0].data[...] = self.batch_canvas
-        print("[flag -scater forward done]")
 
     def backward(self, top, propagate_down, bottom):
         pass
@@ -311,8 +385,7 @@ class CreateLoss(caffe.Layer):
         # cls_loss_reduced *= cls_loss_weight
         # loss = loc_loss_reduced + cls_loss_reduced
 
-        print(loss)
-        exit()
+        # print(loss)
         pass
 
     def reshape(self, bottom, top):
@@ -439,12 +512,21 @@ class PrepareLossWeight(caffe.Layer):
         self.cls_weights, self.reg_weights, self.cared = self.prepare_loss_weights(self.labels)
 
     def reshape(self, bottom, top):
-        top[0].reshape(*self.cls_weights.shape)
-        top[1].reshape(*self.reg_weights.shape)
-        top[2].reshape(*self.cared.shape)
-        pass
+        print("########## weight shape: ", self.reg_weights.shape)
+        # top[0].reshape(*self.cls_weights.shape)
+        top[0].reshape(*self.cared.shape)
+        # top[1].reshape(*self.reg_weights.shape)
+
+
     def forward(self, bottom, top):
-        pass
+        # print("#######PrepareLossWeight forward")
+        self.labels = bottom[0].data
+        self.cls_weights, self.reg_weights, self.cared = self.prepare_loss_weights(self.labels)
+        # top[0].data[...] = self.cls_weights
+        # top[1].data[...] = self.reg_weights
+        top[0].data[...] = self.cared
+        # print("#######PrepareLossWeight end")
+
     def prepare_loss_weights(self, labels,
                             pos_cls_weight=1.0, # TODO: pass params here
                             neg_cls_weight=1.0,
@@ -486,12 +568,11 @@ class PrepareLossWeight(caffe.Layer):
     def backward(self, top, propagate_down, bottom):
         pass
 
-
 class ClsLossCreate(caffe.Layer):
     def setup(self, bottom, top):
-
-        self.cls_preds = bottom[0].data
-        self.labels = bottom[1].data
+        # print("#######ClsLossCreate setup")
+        self.labels = bottom[0].data
+        self.cls_preds = bottom[1].data
         self.cared = bottom[2].data
 
         cls_targets = self.labels * self.cared
@@ -518,16 +599,152 @@ class ClsLossCreate(caffe.Layer):
     def reshape(self, bottom, top):
         #reshape to caffe pattern
         self.one_hot_targets = np.transpose(self.one_hot_targets, (0,2,1))
-        top[0].reshape(*self.cls_preds.shape)
-        top[1].reshape(*self.one_hot_targets.shape)
-        pass
+        top[0].reshape(*self.one_hot_targets.shape)
+        top[1].reshape(*self.cls_preds.shape)
+
     def forward(self, bottom, top):
         pass
+        # print("#######ClsLossCreate forward")
+
     def backward(self, top, propagate_down, bottom):
         pass
 
+class LabelEncode(caffe.Layer):
+    def setup(self, bottom, top):
+        # print("#######ClsLossCreate setup")
+        self.labels = bottom[0].data
+        self.cared = bottom[1].data
+
+        cls_targets = self.labels * self.cared
+        cls_targets = np.expand_dims(cls_targets, -1).astype(int)
+
+        encode_background_as_zeros=True
+        batch_size = 2
+        num_class = 1
+
+        cls_targets = np.squeeze(cls_targets, -1) # cls_targets.squeeze(-1)
+        # print("[debug] cls_targets shape", cls_targets.shape)
+        self.one_hot_targets = np.eye(num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
+        if encode_background_as_zeros:
+            self.one_hot_targets = self.one_hot_targets[..., 1:]
+        # print("[debug] one_hot_targets shape", self.one_hot_targets.shape)
+        self.one_hot_targets = np.transpose(self.one_hot_targets, (0,2,1))
+        top[0].reshape(*self.one_hot_targets.shape)
+
+    def reshape(self, bottom, top):
+        #reshape to caffe pattern
+        pass
+
+    def forward(self, bottom, top):
+        # print("#######ClsLossCreate forward")
+        self.labels = bottom[0].data
+        self.cared = bottom[1].data
+
+        cls_targets = self.labels * self.cared
+        cls_targets = np.expand_dims(cls_targets, -1).astype(int)
+
+        encode_background_as_zeros=True
+        batch_size = 2
+        num_class = 1
+
+        cls_targets = np.squeeze(cls_targets, -1) # cls_targets.squeeze(-1)
+        # print("[debug] cls_targets shape", cls_targets.shape)
+        self.one_hot_targets = np.eye(num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
+        if encode_background_as_zeros:
+            self.one_hot_targets = self.one_hot_targets[..., 1:]
+        self.one_hot_targets = np.transpose(self.one_hot_targets, (0,2,1))
+        top[0].data[...] = self.one_hot_targets
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+class PredReshape(caffe.Layer):
+    def setup(self, bottom, top):
+        # print("#######PredReshape setup")
+        self.cls_preds = bottom[0].data
+
+        encode_background_as_zeros=True, # TODO: pass through
+        batch_size = 2
+        num_class = 1
+
+        # print("[debug] cls_preds shape", cls_preds.shape)
+        if encode_background_as_zeros:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class, -1)
+        else:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class + 1, -1)
+        # print("[debug] cls_preds shape after", self.cls_preds.shape)
+
+    def reshape(self, bottom, top):
+        #reshape to caffe pattern
+        # print("#######PredReshape reshape")
+        top[0].reshape(*self.cls_preds.shape)
+
+
+    def forward(self, bottom, top):
+        # print("#######PredReshape forward")
+        self.cls_preds = bottom[0].data
+
+        encode_background_as_zeros=True, # TODO: pass through
+        batch_size = 2
+        num_class = 1
+
+        # print("[debug] cls_preds shape", cls_preds.shape)
+        if encode_background_as_zeros:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class, -1)
+        else:
+            self.cls_preds = self.cls_preds.reshape(batch_size, num_class + 1, -1)
+        top[0].data[...] = self.cls_preds
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+class RegLabelLossCreate(caffe.Layer):
+    def setup(self, bottom, top):
+        self.reg_targets = bottom[0].data
+        self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
+        top[0].reshape(*self.reg_targets.shape)
+
+    def reshape(self, bottom, top):
+        pass
+
+    def forward(self, bottom, top):
+        self.reg_targets = bottom[0].data
+        self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
+        top[0].data[...] = self.reg_targets
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+class RegPredLossCreate(caffe.Layer):
+    def setup(self, bottom, top):
+        box_code_size = 7
+        self.box_preds = bottom[0].data
+        batch_size = int(self.box_preds.shape[0])
+        self.box_preds = self.box_preds.reshape(batch_size, -1, box_code_size)
+
+        self.box_preds = np.transpose(self.box_preds, (0,2,1))
+        top[0].reshape(*self.box_preds.shape)
+
+    def reshape(self, bottom, top):
+        pass
+
+    def forward(self, bottom, top):
+        # print("#######RegLossCreate forward")
+        box_code_size = 7
+        self.box_preds = bottom[0].data
+        batch_size = int(self.box_preds.shape[0])
+        self.box_preds = self.box_preds.reshape(batch_size, -1, box_code_size)
+
+        self.box_preds = np.transpose(self.box_preds, (0,2,1))
+        top[0].data[...] = self.box_preds
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+
+
 class RegLossCreate(caffe.Layer):
     def setup(self, bottom, top):
+        # print("#######RegLossCreate setup")
 
         box_code_size = 7
         self.box_preds = bottom[0].data
@@ -540,18 +757,43 @@ class RegLossCreate(caffe.Layer):
             # sin(a - b) = sinacosb-cosasinb
             # TODO: double check
             self.box_preds, self.reg_targets = self.add_sin_difference(self.box_preds, self.reg_targets)
-
-    def reshape(self, bottom, top):
-        #reshape to caffe pattern
         self.box_preds = np.transpose(self.box_preds, (0,2,1))
         self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
         top[0].reshape(*self.box_preds.shape)
         top[1].reshape(*self.reg_targets.shape)
 
-    def forward(self, bottom, top):
+    def reshape(self, bottom, top):
+        # print("#######RegLossCreate reshape")
+        #reshape to caffe pattern
         pass
+        # self.box_preds = np.transpose(self.box_preds, (0,2,1))
+        # self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
+        # top[0].reshape(*self.box_preds.shape)
+        # top[1].reshape(*self.reg_targets.shape)
+
+    def forward(self, bottom, top):
+        # print("#######RegLossCreate forward")
+        box_code_size = 7
+        self.box_preds = bottom[0].data
+        self.reg_targets = bottom[1].data
+        batch_size = int(self.box_preds.shape[0])
+        self.box_preds = self.box_preds.reshape(batch_size, -1, box_code_size)
+
+        encode_rad_error_by_sin = True # TODO:  pass through
+        if encode_rad_error_by_sin:
+            # sin(a - b) = sinacosb-cosasinb
+            # TODO: double check
+            #print("[debug] befor add_sin_difference : ", self.box_preds.shape)
+            self.box_preds, self.reg_targets = self.add_sin_difference(self.box_preds, self.reg_targets)
+            #print("[debug] after add_sin_difference : ", self.box_preds.shape)
+        self.box_preds = np.transpose(self.box_preds, (0,2,1))
+        self.reg_targets = np.transpose(self.reg_targets, (0,2,1))
+        top[0].data[...] = self.box_preds
+        top[1].data[...] = self.reg_targets
 
     def add_sin_difference(self, boxes1, boxes2):
+        print("check box1 inf: ", np.isinf(boxes1).any())
+        print("check box2 inf: ", np.isinf(boxes2).any())
         rad_pred_encoding = np.sin(boxes1[..., -1:]) * np.cos(
             boxes2[..., -1:])
         rad_tg_encoding = np.cos(boxes1[..., -1:]) * np.sin(boxes2[..., -1:])
@@ -566,15 +808,47 @@ class TestLayer(caffe.Layer):
 
     def setup(self, bottom, top):
         self.cls_preds = bottom[0].data
-        # self.labels = bottom[1].data
-        # self.cared = bottom[2].data
-    def reshape(self, bottom, top):
-        top[0].reshape(*self.cls_preds.shape)
+        pos_cls_weight = 1
+        neg_cls_weight = 1
+        batch_size = 2 ## TODO:  pass param to here
+        loc_loss = bottom[0].data
+        cls_loss = bottom[1].data
+        loc_loss_weight
+        cls_loss_weight
 
+        loc_loss_reduced = np.sum(loc_loss) / batch_size
+        loc_loss_reduced *= loc_loss_weight
+        cls_pos_loss, cls_neg_loss = self.get_pos_neg_loss(cls_loss, labels)
+        cls_pos_loss /= pos_cls_weight
+        cls_neg_loss /= neg_cls_weight
+        cls_loss_reduced = np.sum(cls_loss) / batch_size
+        cls_loss_reduced *= cls_loss_weight
+        self.loss = loc_loss_reduced + cls_loss_reduced
+
+        top[0].reshape(*self.loss.shape)
+
+    def reshape(self, bottom, top):
+        pass
     def forward(self, bottom, top):
         pass
     def backward(self, top, propagate_down, bottom):
         pass
+
+    def get_pos_neg_loss(self, cls_loss, labels):
+        # cls_loss: [N, num_anchors, num_class]
+        # labels: [N, num_anchors]
+        batch_size = cls_loss.shape[0]
+        if cls_loss.shape[-1] == 1 or len(cls_loss.shape) == 2:
+            cls_pos_loss = (labels > 0).type_as(cls_loss) * cls_loss.view(
+                batch_size, -1)
+            cls_neg_loss = (labels == 0).type_as(cls_loss) * cls_loss.view(
+                batch_size, -1)
+            cls_pos_loss = cls_pos_loss.sum() / batch_size
+            cls_neg_loss = cls_neg_loss.sum() / batch_size
+        else:
+            cls_pos_loss = cls_loss[..., 1:].sum() / batch_size
+            cls_neg_loss = cls_loss[..., 0].sum() / batch_size
+        return cls_pos_loss, cls_neg_loss
 
 class WeightedSmoothL1LocalizationLoss(caffe.Layer):
 
