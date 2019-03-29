@@ -4,7 +4,9 @@ import pathlib
 import shutil
 import time
 from functools import partial
+import sys
 
+from second.data.preprocess import merge_second_batch
 from second.bcl_caffe.utils import get_paddings_indicator_caffe
 from second.builder import target_assigner_builder, voxel_builder
 from second.pytorch.builder import (box_coder_builder, input_reader_builder,
@@ -46,95 +48,121 @@ class InputKittiData(caffe.Layer):
         self.vy = voxel_size[1]
         self.x_offset = self.vx / 2 + point_cloud_range[0]
         self.y_offset = self.vy / 2 + point_cloud_range[1]
+        self.index_list = np.arange(3712)
+        np.random.shuffle(self.index_list)
+        self.iter = iter(self.index_list)
+        #
+        # ########################################################################
 
-        ########################################################################
-        example = self.prep_and_read_kitti()
-        self.voxels = example['voxels']
-        self.coors = example['coordinates']
-        self.num_points = example['num_points']
-        self.labels = example['labels']
-        self.reg_targets =example['reg_targets']
-
-        points_mean = np.sum(self.voxels[:, :, :3], axis=1, keepdims=True) / self.num_points.reshape(-1,1,1)
-        f_cluster = self.voxels[:, :, :3] - points_mean
-
-        # Find distance of x, y, and z from pillar center
-        f_center = self.voxels[:, :, :2]
-        f_center[:, :, 0] = f_center[:, :, 0] - (np.expand_dims(self.coors[:, 3].astype(float), axis=1) * self.vx + self.x_offset)
-        f_center[:, :, 1] = f_center[:, :, 1] - (np.expand_dims(self.coors[:, 2].astype(float), axis=1) * self.vy + self.y_offset)
-
-        features_ls = [self.voxels, f_cluster, f_center]
-        self.features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
-
-        # The feature decorations were calculated without regard to whether pillar was empty. Need to ensure that
-        # empty pillars remain set to zeros.
-
-        # TODO:  double check !!!!!!!!!!!!
-        points_per_voxels = self.features.shape[1]
-        mask = get_paddings_indicator_caffe(self.num_points, points_per_voxels, axis=0)
-        #mask = torch.unsqueeze(mask, -1).type_as(features)
-        mask = np.expand_dims(mask, axis=-1)
-        self.features *= mask
+        #
+        # example = next(self.data_iter)
+        #
+        # self.voxels = example['voxels']
+        # self.coors = example['coordinates']
+        # self.num_points = example['num_points']
+        # self.labels = example['labels']
+        # self.reg_targets =example['reg_targets']
+        #
+        # points_mean = np.sum(self.voxels[:, :, :3], axis=1, keepdims=True) / self.num_points.reshape(-1,1,1)
+        # f_cluster = self.voxels[:, :, :3] - points_mean
+        #
+        # # Find distance of x, y, and z from pillar center
+        # f_center = self.voxels[:, :, :2]
+        # f_center[:, :, 0] = f_center[:, :, 0] - (np.expand_dims(self.coors[:, 3].astype(float), axis=1) * self.vx + self.x_offset)
+        # f_center[:, :, 1] = f_center[:, :, 1] - (np.expand_dims(self.coors[:, 2].astype(float), axis=1) * self.vy + self.y_offset)
+        #
+        # features_ls = [self.voxels, f_cluster, f_center]
+        # self.features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
+        #
+        # # The feature decorations were calculated without regard to whether pillar was empty. Need to ensure that
+        # # empty pillars remain set to zeros.
+        #
+        # # TODO:  double check !!!!!!!!!!!!
+        # points_per_voxels = self.features.shape[1]
+        # mask = get_paddings_indicator_caffe(self.num_points, points_per_voxels, axis=0)
+        # #mask = torch.unsqueeze(mask, -1).type_as(features)
+        # mask = np.expand_dims(mask, axis=-1)
+        # self.features *= mask
         ########################################################################
 
     def reshape(self, bottom, top):
-
-        voxel_num = self.voxels.shape[0]
-        max_points_in_voxels = self.voxels.shape[1]
-        self.features = self.features.reshape(1, voxel_num, max_points_in_voxels, -1).transpose(0,3,1,2)
-
-        top[0].reshape(*self.features.shape) #[1,9,7000,100]
-        # self.coors = self.coors.reshape(1,1,voxel_num,-1) #[1, 1, 7000, 4]
-        top[1].reshape(*self.coors.shape) #[7000,4]
-        top[2].reshape(*self.labels.shape) #[2 107136]
-        top[3].reshape(*self.reg_targets.shape) #[]
-
-    def forward(self, bottom, top):
-        # print("[flag -forward]")
+        # example = next(self.data_iter)
+        # print("####### data_iter", sys.getsizeof(data_iter))
         example = self.prep_and_read_kitti()
-        self.voxels = example['voxels']
-        self.coors = example['coordinates']
-        self.num_points = example['num_points']
-        self.labels = example['labels']
-        self.reg_targets =example['reg_targets']
+        # example_batch = []
+        # for _ in range(self.batch_size):
+        #     # index = self.index_list[next(self.iter, None)]
+        #     # if index == None:
+        #     #     np.random.shuffle(self.index_list)
+        #     #     self.iter = iter(self.index_list)
+        #     #     index = self.index_list[next(self.iter)]
+        #     index = np.floor(np.random.rand() * 3712).astype(np.int)
+        #     example = dataset[index]
+        #     # print("[debug] image_idx" , example["image_idx"])
+        #     example_batch.append(example)
+        #
+        # example = self.merge_second_batch(example_batch)
 
-        points_mean = np.sum(self.voxels[:, :, :3], axis=1, keepdims=True) / self.num_points.reshape(-1,1,1)
-        f_cluster = self.voxels[:, :, :3] - points_mean
+        voxels = example['voxels']
+        coors = example['coordinates']
+        num_points = example['num_points']
+        labels = example['labels']
+        reg_targets =example['reg_targets']
+        print("[debug] image index : ", example["image_idx"])
+
+        points_mean = np.sum(voxels[:, :, :3], axis=1, keepdims=True) / num_points.reshape(-1,1,1)
+        f_cluster = voxels[:, :, :3] - points_mean
 
         # Find distance of x, y, and z from pillar center
-        f_center = self.voxels[:, :, :2]
-        f_center[:, :, 0] = f_center[:, :, 0] - (np.expand_dims(self.coors[:, 3].astype(float), axis=1) * self.vx + self.x_offset)
-        f_center[:, :, 1] = f_center[:, :, 1] - (np.expand_dims(self.coors[:, 2].astype(float), axis=1) * self.vy + self.y_offset)
+        f_center = voxels[:, :, :2]
+        f_center[:, :, 0] = f_center[:, :, 0] - (np.expand_dims(coors[:, 3].astype(float), axis=1) * self.vx + self.x_offset)
+        f_center[:, :, 1] = f_center[:, :, 1] - (np.expand_dims(coors[:, 2].astype(float), axis=1) * self.vy + self.y_offset)
 
-        features_ls = [self.voxels, f_cluster, f_center]
-        self.features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
+        features_ls = [voxels, f_cluster, f_center]
+        features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
 
         # The feature decorations were calculated without regard to whether pillar was empty. Need to ensure that
         # empty pillars remain set to zeros.
 
         # TODO:  double check !!!!!!!!!!!!
-        points_per_voxels = self.features.shape[1]
-        mask = get_paddings_indicator_caffe(self.num_points, points_per_voxels, axis=0)
+        points_per_voxels = features.shape[1]
+        mask = get_paddings_indicator_caffe(num_points, points_per_voxels, axis=0)
         #mask = torch.unsqueeze(mask, -1).type_as(features)
         mask = np.expand_dims(mask, axis=-1)
-        self.features *= mask
+        features *= mask
 
         #reshape
-        voxel_num = self.voxels.shape[0]
-        max_points_in_voxels = self.voxels.shape[1]
-        self.features = self.features.reshape(1, voxel_num, max_points_in_voxels, -1).transpose(0,3,1,2)
+        voxel_num = voxels.shape[0]
+        max_points_in_voxels = voxels.shape[1]
+        features = features.reshape(1, voxel_num, max_points_in_voxels, -1).transpose(0,3,1,2)
 
-        top[0].reshape(*self.features.shape) #[1,9,7000,100]
-        top[1].reshape(*self.coors.shape) #[7000,4]
-        top[2].reshape(*self.labels.shape) #[2 107136]
-        top[3].reshape(*self.reg_targets.shape) #[]
+        top[0].reshape(*features.shape) #[1,9,7000,100]
+        top[1].reshape(*coors.shape) #[7000,4]
+        top[2].reshape(*labels.shape) #[2 107136]
+        top[3].reshape(*reg_targets.shape) #[]
 
-        print("[debug] image index : ", example["image_idx"])
+        top[0].data[...] = features
+        top[1].data[...] = coors
+        top[2].data[...] = labels
+        top[3].data[...] = reg_targets
+        # voxel_num = self.voxels.shape[0]
+        # max_points_in_voxels = voxels.shape[1]
+        # features = features.reshape(1, voxel_num, max_points_in_voxels, -1).transpose(0,3,1,2)
+        #
+        # top[0].reshape(*features.shape) #[1,9,7000,100]
+        # top[1].reshape(*coors.shape) #[7000,4]
+        # top[2].reshape(*labels.shape) #[2 107136]
+        # top[3].reshape(*reg_targets.shape) #[]
+
+    def forward(self, bottom, top):
+        # print("phase : ", self.phase)
+        pass
         #######################################################################
-        top[0].data[...] = self.features
-        top[1].data[...] = self.coors
-        top[2].data[...] = self.labels
-        top[3].data[...] = self.reg_targets
+        # top[0].data[...] = self.features
+        # top[1].data[...] = self.coors
+        # top[2].data[...] = labels
+        # top[3].data[...] = self.reg_targets
+        # del self.features, self.coors, self.labels, self.reg_targets
 
         # print("[flag -forward done]")
 
@@ -189,28 +217,65 @@ class InputKittiData(caffe.Layer):
             voxel_generator=voxel_generator,
             target_assigner=target_assigner)
 
-        eval_dataset = input_reader_builder.build(
-            eval_input_cfg,
-            model_cfg,
-            training=False,
-            voxel_generator=voxel_generator,
-            target_assigner=target_assigner)
-
-        ## TODO: check if data_iter is rotating
-        data_iter = iter(dataset)
-
-        # merge batch
         example_batch = []
         for _ in range(self.batch_size):
-            example = next(data_iter)
+            index = self.index_list[next(self.iter, None)]
+            if index == None:
+                np.random.shuffle(self.index_list)
+                self.iter = iter(self.index_list)
+                index = self.index_list[next(self.iter)]
+            # index = np.floor(np.random.rand() * 3712).astype(np.int)
+            example = dataset[index]
             # print("[debug] image_idx" , example["image_idx"])
             example_batch.append(example)
 
-        ret = self.merge_second_batch(example_batch)
+        dataset = self.merge_second_batch(example_batch)
+        # eval_dataset = input_reader_builder.build(
+        #     eval_input_cfg,
+        #     model_cfg,
+        #     training=False,
+        #     voxel_generator=voxel_generator,
+        #     target_assigner=target_assigner)
 
-
-
-        return ret
+        # def _worker_init_fn(worker_id):
+        #     time_seed = np.array(time.time(), dtype=np.int32)
+        #     np.random.seed(time_seed + worker_id)
+        #     print(f"WORKER {worker_id} seed:", np.random.get_state()[1][0])
+        #
+        # dataloader = torch.utils.data.DataLoader(
+        #     dataset,
+        #     batch_size=input_cfg.batch_size,
+        #     shuffle=True,
+        #     num_workers=input_cfg.num_workers,
+        #     pin_memory=False,
+        #     collate_fn=merge_second_batch,
+        #     worker_init_fn=_worker_init_fn)
+        # eval_dataloader = torch.utils.data.DataLoader(
+        #     eval_dataset,
+        #     batch_size=eval_input_cfg.batch_size,
+        #     shuffle=False,
+        #     num_workers=eval_input_cfg.num_workers,
+        #     pin_memory=False,
+        #     collate_fn=merge_second_batch)
+        # print("Phase: ", self.phase)
+        # if not self.phase:
+        # data_iter = iter(dataset)
+        # else:
+        # data_iter = iter(eval_dataloader)
+        # print(data_iter)
+        return dataset
+        # ## TODO: check if data_iter is rotating
+        # data_iter = iter(dataset)
+        #
+        # # merge batch
+        # example_batch = []
+        # for _ in range(self.batch_size):
+        #     example = next(data_iter)
+        #     # print("[debug] image_idx" , example["image_idx"])
+        #     example_batch.append(example)
+        #
+        # ret = self.merge_second_batch(example_batch)
+        # return ret
 
     def merge_second_batch(self, batch_list):
         example_merged = defaultdict(list)
@@ -253,56 +318,56 @@ class PointPillarsScatter(caffe.Layer):
         self.nx = self.output_shape[3]
         self.nchannels = self.num_input_features
         self.batch_size = 2 # TODO: pass batch to here
+        #
+        # voxel_features = bottom[0].data
+        # voxel_features = np.transpose(np.squeeze(voxel_features))
+        # coords = bottom[1].data
+        #
+        # self.batch_canvas = []
+        # for batch_itt in range(self.batch_size):
+        #     # Create the canvas for this sample
+        #     canvas = np.zeros(shape=(self.nchannels, self.nx * self.ny))
+        #
+        #     # Only include non-empty pillars
+        #     batch_mask = coords[:, 0] == batch_itt
+        #     this_coords = coords[batch_mask, :]
+        #     indices = this_coords[:, 2] * self.nx + this_coords[:, 3]
+        #     indices = indices.astype(int)
+        #     voxels = voxel_features[batch_mask, :]
+        #     voxels = np.transpose(voxels)
+        #
+        #     _coors = coords[batch_mask, :]
+        #     _coors = np.transpose(_coors)
+        #
+        #     # Now scatter the blob back to the canvas.
+        #     canvas[:, indices] = voxels
+        #
+        #     # Append to a list for later stacking.
+        #     self.batch_canvas.append(canvas)
+        #
+        # # Stack to 3-dim tensor (batch-size, nchannels, nrows*ncols)
+        # self.batch_canvas = np.stack(self.batch_canvas, 0)
+        #
+        # # Undo the column stacking to final 4-dim tensor
+        # self.batch_canvas = self.batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
 
-        voxel_features = bottom[0].data
-        voxel_features = np.transpose(np.squeeze(voxel_features))
-        coords = bottom[1].data
-
-        self.batch_canvas = []
-        for batch_itt in range(self.batch_size):
-            # Create the canvas for this sample
-            canvas = np.zeros(shape=(self.nchannels, self.nx * self.ny))
-
-            # Only include non-empty pillars
-            batch_mask = coords[:, 0] == batch_itt
-            this_coords = coords[batch_mask, :]
-            indices = this_coords[:, 2] * self.nx + this_coords[:, 3]
-            indices = indices.astype(int)
-            voxels = voxel_features[batch_mask, :]
-            voxels = np.transpose(voxels)
-
-            _coors = coords[batch_mask, :]
-            _coors = np.transpose(_coors)
-
-            # Now scatter the blob back to the canvas.
-            canvas[:, indices] = voxels
-
-            # Append to a list for later stacking.
-            self.batch_canvas.append(canvas)
-
-        # Stack to 3-dim tensor (batch-size, nchannels, nrows*ncols)
-        self.batch_canvas = np.stack(self.batch_canvas, 0)
-
-        # Undo the column stacking to final 4-dim tensor
-        self.batch_canvas = self.batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
-
-        top[0].reshape(*self.batch_canvas.shape)
+        top[0].reshape(self.batch_size, self.nchannels, self.ny, self.nx)
 
     def reshape(self, bottom, top):
         pass
 
     def forward(self, bottom, top):
 
-        self.ny = self.output_shape[2]
-        self.nx = self.output_shape[3]
-        self.nchannels = self.num_input_features
-        self.batch_size = 2 # TODO: pass batch to here
+        # self.ny = self.output_shape[2]
+        # self.nx = self.output_shape[3]
+        # self.nchannels = self.num_input_features
+        # self.batch_size = 2 # TODO: pass batch to here
 
         voxel_features = bottom[0].data
         voxel_features = np.transpose(np.squeeze(voxel_features))
         coords = bottom[1].data
 
-        self.batch_canvas = []
+        batch_canvas = []
         for batch_itt in range(self.batch_size):
             # Create the canvas for this sample
             canvas = np.zeros(shape=(self.nchannels, self.nx * self.ny))
@@ -322,17 +387,17 @@ class PointPillarsScatter(caffe.Layer):
             canvas[:, indices] = voxels
 
             # Append to a list for later stacking.
-            self.batch_canvas.append(canvas)
+            batch_canvas.append(canvas)
 
         # Stack to 3-dim tensor (batch-size, nchannels, nrows*ncols)
-        self.batch_canvas = np.stack(self.batch_canvas, 0)
+        batch_canvas = np.stack(batch_canvas, 0)
 
         # Undo the column stacking to final 4-dim tensor
-        self.batch_canvas = self.batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
+        batch_canvas = batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
 
-        print("[debug] self.batch_canvas ", self.batch_canvas.shape)
+        print("[debug] batch_canvas ", batch_canvas.shape)
 
-        top[0].data[...] = self.batch_canvas
+        top[0].data[...] = batch_canvas
 
     def backward(self, top, propagate_down, bottom):
         pass
@@ -512,7 +577,6 @@ class PrepareLossWeight(caffe.Layer):
         self.cls_weights, self.reg_weights, self.cared = self.prepare_loss_weights(self.labels)
 
     def reshape(self, bottom, top):
-        print("########## weight shape: ", self.reg_weights.shape)
         # top[0].reshape(*self.cls_weights.shape)
         top[0].reshape(*self.cared.shape)
         # top[1].reshape(*self.reg_weights.shape)
@@ -792,8 +856,8 @@ class RegLossCreate(caffe.Layer):
         top[1].data[...] = self.reg_targets
 
     def add_sin_difference(self, boxes1, boxes2):
-        print("check box1 inf: ", np.isinf(boxes1).any())
-        print("check box2 inf: ", np.isinf(boxes2).any())
+        # print("check box1 inf: ", np.isinf(boxes1).any())
+        # print("check box2 inf: ", np.isinf(boxes2).any())
         rad_pred_encoding = np.sin(boxes1[..., -1:]) * np.cos(
             boxes2[..., -1:])
         rad_tg_encoding = np.cos(boxes1[..., -1:]) * np.sin(boxes2[..., -1:])

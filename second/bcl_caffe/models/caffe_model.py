@@ -206,7 +206,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
     # dataset specific settings: nclass, datalayer_train, datalayer_test
     if dataset == 'kitti':
         nclass = 2 # # TODO: change config here
-
+        print("run kitti")
         # dataset_params_train = dataset_params.copy()
         dataset_params_train['subset'] = 'train'
 
@@ -225,21 +225,22 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
 
     # Input/Data layer
     if deploy:
-        datalayer_train = L.Python(name='data', include=dict(phase=caffe.TRAIN),
-                                   ntop= 4,
-                                   python_param=dict(module='custom_layers', layer='InputKittiData',
-                                                     param_str=repr(dataset_params_train)))
-        # # # # TODO:  change evl path
-        datalayer_test = L.Python(name='data', include=dict(phase=caffe.TEST), ntop=0,
-                                  top= ['data', 'coors', 'labels', 'reg_targets'],
-                                  python_param=dict(module='custom_layers', layer='InputKittiData',
-                                                    param_str=repr(dataset_params_train)))
-        n.data, n.coors, n.labels, n.reg_targets = datalayer_train
-        n.test_data = datalayer_test
+        print("run deploy")
         # datalayer_train = L.Python(name='data', include=dict(phase=caffe.TRAIN),
-        #                            ntop=3 if renorm_class else 2,
+        #                            ntop= 4,
         #                            python_param=dict(module='custom_layers', layer='InputKittiData',
         #                                              param_str=repr(dataset_params_train)))
+        # # # # # TODO:  change evl path
+        # datalayer_test = L.Python(name='data', include=dict(phase=caffe.TEST), ntop=0,
+        #                           top= ['data', 'coors', 'labels', 'reg_targets'],
+        #                           python_param=dict(module='custom_layers', layer='InputKittiData',
+        #                                             param_str=repr(dataset_params_train)))
+        # n.data, n.coors, n.labels, n.reg_targets = datalayer_train
+        # n.test_data = datalayer_test
+        datalayer_train = L.Python(name='data', include=dict(phase=caffe.TRAIN),
+                                   ntop=3 if renorm_class else 2,
+                                   python_param=dict(module='custom_layers', layer='InputKittiData',
+                                                     param_str=repr(dataset_params_train)))
 
         # n.data, n.coors = L.Input(ntop=2 , shape=dict(dim=[1, len(input_dims), 1, sample_size])) # outputs (except labels) must equal datalayer_train
         # n.data = L.Input(shape=dict(dim=[1, len(input_dims), 1, sample_size]))
@@ -484,7 +485,7 @@ def test_v1(arch_str='64_128_256_256', batchnorm=True,
 
     n['cls_loss'] = L.FocalLoss(n['cls_preds'], n['_labels'], focal_loss_param=dict(axis=1, alpha=0.25, gamma=2.0))
 
-    n['reg_loss'] = L.SmoothL1Loss(n['box_preds'], n['_reg_targets'], loss_weight = 1, smooth_l1_loss_param=dict(sigma=1)) #, n['reg_weights']
+    n['reg_loss'] = L.SmoothL1Loss(n['box_preds'], n['_reg_targets'], loss_weight = 0, smooth_l1_loss_param=dict(sigma=1)) #, n['reg_weights']
 
 
     # n['cls_loss'] = L.FocalLoss(n['_labels'], n['cls_preds'])
