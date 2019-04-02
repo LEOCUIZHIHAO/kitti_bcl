@@ -43,14 +43,12 @@ def _get_pos_neg_loss(cls_loss, labels):
         cls_neg_loss = cls_loss[..., 0].sum() / batch_size
     return cls_pos_loss, cls_neg_loss
 
-
 def _flat_nested_json_dict(json_dict, flatted, sep=".", start=""):
     for k, v in json_dict.items():
         if isinstance(v, dict):
             _flat_nested_json_dict(v, flatted, sep, start + sep + k)
         else:
             flatted[start + sep + k] = v
-
 
 def flat_nested_json_dict(json_dict, sep=".") -> dict:
     """flat a nested json-like dict. this function make shadow copy.
@@ -86,65 +84,53 @@ def example_convert_to_caffe(example, dtype=torch.float32,
     return example_torch
 
 #caffe model prepare
-def caf_model(network, exp_dir, args):
-
+def caf_model(exp_dir, args):
     # if args.cpu:
     #     caffe.set_mode_cpu()
     # else:
     caffe.set_mode_gpu()
     caffe.set_device(0)
 
-    if network == 'kitti':
-        batch_norm = True
-        conv_weight_filler = 'xavier'
-        network = caffe_model.test_v1(
-                                     arch_str='c32_b64_b128_b256_b256_b256_c128',
-                                     skip_str= ['6_2', '6_3', '6_4', '6_5'],
-                                     renorm_class=False,
-                                     dataset="kitti",
-                                     dataset_params_train=args,
-                                     feat_dims_str='x_y_z',
-                                     lattice_dims_str=["x*64_y*64_z*64", "x*32_y*32_z*32", "x*16_y*16_z*16", "x*8_y*8_z*8", "x*4_y*4_z*4"],
-                                     sample_size=3000,
-                                     batch_size=32,
-                                     batchnorm=batch_norm,
-                                     conv_weight_filler=conv_weight_filler,
-                                     save_path=os.path.join(exp_dir, 'net.prototxt'))
-        # deploy model use for prediction
-        # caffe_model.test_v1(deploy=True,
-        #                    arch_str='c32_b64_b128_b256_b256_b256_c128',
-        #                    skip_str= ['6_2', '6_3', '6_4', '6_5'],
-        #                    renorm_class=False,
-        #                    dataset="kitti",
-        #                    dataset_params_train=args,
-        #                    feat_dims_str='x_y_z',
-        #                    lattice_dims_str=["x*64_y*64_z*64", "x*32_y*32_z*32", "x*16_y*16_z*16", "x*8_y*8_z*8", "x*4_y*4_z*4"],
-        #                    sample_size=3000,
-        #                    batchnorm=batch_norm,
-        #                    save_path=os.path.join(exp_dir, 'net_deploy.prototxt'))
-    else:
-        assert network.endswith('.prototxt'), 'Please provide a valid prototxt file'
-        print('Using network defined at {}'.format(network))
+    trian_proto_path = os.path.join(exp_dir, 'train.prototxt')
+    eval_proto_path = os.path.join(exp_dir, 'eval.prototxt')
+    deploy_proto_path = os.path.join(exp_dir, 'deploy.prototxt')
+
+    train_net = caffe_model.test_v1(phase='train', dataset_params=args)
+    eval_net = caffe_model.test_v1(phase='eval', dataset_params=args)
+
+    with open(trian_proto_path, 'w') as f:
+        print(train_net, file=f)
+
+    with open(eval_proto_path, 'w') as f:
+        print(eval_net, file=f)
+
+    # # deploy model use for prediction
+    # caffe_model.test_v1(deploy=True, dataset_params=args,)
 
     random_seed = 0
     debug_info = False
-    solver = solver_function.standard_solver(network,
-                                           network,
+
+    # 9280/5 = 1856  32*9280 = 296960
+    solver = solver_function.SolverWrapper(trian_proto_path,
+                                           eval_proto_path,
                                            os.path.join(exp_dir, 'snapshot'),
-                                           base_lr= 0.0001,
+                                           base_lr= 0.0002,
                                            gamma= 0.1,
-                                           stepsize= 20,
-                                           test_iter= 1, # 10
-                                           test_interval=1,
-                                           max_iter=2000, #2000
-                                           snapshot=20,
+                                           stepsize= 1000, #learning rate decay
+                                           test_iter= 10, # 10 #number of iterations to use at each testing phase 3769
+                                           test_interval= 9280, # 'test every such iterations'
+                                           max_iter= 30, # 296960 = 32*9280
+                                           snapshot=1000,
                                            solver_type='ADAM',
                                            weight_decay=0.001,
-                                           iter_size=2,
+                                           iter_size=2, #'number of mini-batches per iteration', batchsize*itersize = real_batch size
                                            debug_info=debug_info,
                                            random_seed=random_seed,
                                            save_path=os.path.join(exp_dir, 'solver.prototxt'))
-    solver = caffe.get_solver(solver)
+
+    solver.train_model()
+
+
     print("[CAFF SOLVER INIT ] ")
 
     # if args.init_model:
@@ -158,10 +144,8 @@ def caf_model(network, exp_dir, args):
     #         solver.restore(args.init_state)
     #     else:
     #         solver.restore(os.path.join(exp_dir, 'snapshot_iter_{}.solverstate'.format(args.init_state)))
-    solver.solve()
+    #solver.solve()
     print("[CAFF SOLVER DONE DONE DONE ] ")
-
-    exit()
 
 def train(config_path,
           model_dir,
@@ -172,97 +156,10 @@ def train(config_path,
           pickle_result=True):
     """train a VoxelNet model specified by a config file.
     """
-    # if create_folder:
-    #     if pathlib.Path(model_dir).exists():
-    #         model_dir = torchplus.train.create_folder(model_dir)
-    #
-    # model_dir = pathlib.Path(model_dir)
-    # model_dir.mkdir(parents=True, exist_ok=True)
-    # eval_checkpoint_dir = model_dir / 'eval_checkpoints'
-    # eval_checkpoint_dir.mkdir(parents=True, exist_ok=True)
-    # if result_path is None:
-    #     result_path = model_dir / 'results'
-    # config_file_bkp = "pipeline.config"
-    # config = pipeline_pb2.TrainEvalPipelineConfig()
-    # print("[config_path]", config_path)
-    # with open(config_path, "r") as f:
-    #     proto_str = f.read()
-    #     text_format.Merge(proto_str, config)
-    # shutil.copyfile(config_path, str(model_dir / config_file_bkp))
-    # input_cfg = config.train_input_reader
-    # eval_input_cfg = config.eval_input_reader
-    # model_cfg = config.model.second
-    # train_cfg = config.train_config
-    #
-    # class_names = list(input_cfg.class_names)
-    # ######################
-    # # BUILD VOXEL GENERATOR
-    # ######################
-    # voxel_generator = voxel_builder.build(model_cfg.voxel_generator)
-    # ######################
-    # # BUILD TARGET ASSIGNER
-    # ######################
-    # bv_range = voxel_generator.point_cloud_range[[0, 1, 3, 4]]
-    # box_coder = box_coder_builder.build(model_cfg.box_coder)
-    # target_assigner_cfg = model_cfg.target_assigner
-    # target_assigner = target_assigner_builder.build(target_assigner_cfg,
-    #                                                 bv_range, box_coder)
-    ######################
-    # BUILD NET
-    ######################
-    # center_limit_range = model_cfg.post_center_limit_range
-    # net = second_builder.build(model_cfg, voxel_generator, target_assigner)
-    # net.cuda()
-    # net_train = torch.nn.DataParallel(net).cuda()
-    # print("num_trainable parameters:", len(list(net.parameters())))
-    # for n, p in net.named_parameters():
-    #     print(n, p.shape)
-    ######################
-    # BUILD OPTIMIZER
-    ######################
-    # we need global_step to create lr_scheduler, so restore net first.
-    # torchplus.train.try_restore_latest_checkpoints(model_dir, [net])
-    # gstep = net.get_global_step() - 1
-    # optimizer_cfg = train_cfg.optimizer
-    # if train_cfg.enable_mixed_precision:
-    #     net.half()
-    #     net.metrics_to_float()
-    #     net.convert_norm_to_float(net)
-    # optimizer = optimizer_builder.build(optimizer_cfg, net.parameters())
-    # if train_cfg.enable_mixed_precision:
-    #     loss_scale = train_cfg.loss_scale_factor
-    #     mixed_optimizer = torchplus.train.MixedPrecisionWrapper(
-    #         optimizer, loss_scale)
-    # else:
-    #     mixed_optimizer = optimizer
-    # # must restore optimizer AFTER using MixedPrecisionWrapper
-    # torchplus.train.try_restore_latest_checkpoints(model_dir,
-    #                                                [mixed_optimizer])
-    # lr_scheduler = lr_scheduler_builder.build(optimizer_cfg, optimizer, gstep)
-    # if train_cfg.enable_mixed_precision:
-    #     float_dtype = torch.float16
-    # else:
-    #     float_dtype = torch.float32
-    ######################
-    # PREPARE INPUT
-    ######################
-    # print("#### PREPARE INPUT")
-    # dataset = input_reader_builder.build(
-    #     input_cfg,
-    #     model_cfg,
-    #     training=True,
-    #     voxel_generator=voxel_generator,
-    #     target_assigner=target_assigner)
-    # eval_dataset = input_reader_builder.build(
-    #     eval_input_cfg,
-    #     model_cfg,
-    #     training=False,
-    #     voxel_generator=voxel_generator,
-    #     target_assigner=target_assigner)
     args = {}
     args['config_path'] = config_path
     args['model_dir'] = model_dir
-    caf_model('kitti', '/home/ubuntu/kitti_bcl/second/bcl_caffe', args)
+    caf_model('/home/ubuntu/kitti_bcl/second/bcl_caffe', args)
 
     exit()
 
