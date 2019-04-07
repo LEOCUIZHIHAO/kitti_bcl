@@ -6,6 +6,7 @@ import tempfile
 from caffe.proto import caffe_pb2
 import caffe
 import second.data.kitti_common as kitti
+# from tqdm import tqdm
 # from second.builder import target_assigner_builder, voxel_builder
 # from visualdl import LogWriter
 
@@ -85,7 +86,7 @@ class SolverWrapper:
                         base_lr=0.01,
                         gamma=0.1,
                         stepsize=100,
-                        test_iter=100,
+                        test_iter=3768,
                         test_interval=1000,
                         max_iter=1e5,
                         iter_size=1,
@@ -134,7 +135,7 @@ class SolverWrapper:
         self.solver = caffe.get_solver(solver_prototxt)
 
         self.cur_epoch = 0
-        self.test_interval = 10  #replace self.solver_param.test_interval #9280
+        self.test_interval = 1856  #replace self.solver_param.test_interval #9280
 
         # self.logw = LogWriter("catdog_log", sync_cycle=100)
         # with self.logw.mode('train') as logger:
@@ -144,6 +145,11 @@ class SolverWrapper:
         #     self.sc_val_acc = logger.scalar("Accuracy")
         #     self.sc_val_mAP = logger.scalar("mAP")
 
+    def train_solver(self):
+        #"""执行训练的整个流程，穿插了validation"""
+        return self.solver
+
+
     def train_model(self):
         #"""执行训练的整个流程，穿插了validation"""
         cur_iter = 0
@@ -152,33 +158,31 @@ class SolverWrapper:
         # num_test_images_tot = test_batch_size * self.solver_param.test_iter[0]
         while cur_iter < self.solver_param.max_iter:
             #self.solver.step(self.test_interval)
+            print("perpare to start train")
             for i in range(self.test_interval):
                 self.solver.step(1) #forward + backward + update weights
                 # reg_loss = self.solver.net.blobs['reg_loss'].data
                 # cls_loss = self.solver.net.blobs['cls_loss'].data
 
-            #     step = self.solver.iter
-            #     self.sc_train_loss.add_record(step, loss)
-            #     self.sc_train_acc.add_record(step, acc) # for logger
+                # step = self.solver.iter
+                # self.sc_train_loss.add_record(step, loss)
+                # self.sc_train_acc.add_record(step, acc) # for logger
 
             self.eval_on_val()
+            print("Eval Done ~~~~~~~~~~~~~~!!!!")
             cur_iter += self.test_interval
 
     def eval_on_val(self):
         #"""在整个验证集上执行inference和evaluation"""
         self.solver.test_nets[0].share_with(self.solver.net)
         self.cur_epoch += 1
-
-        # dt_annos = []
+        print("Start Eval ~~~~~~~~~~~~~~!!!!")
         for t in range(self.solver_param.test_iter[0]):
 
             self.solver.test_nets[0].forward()
-            output = self.solver.test_nets[0].blobs
-            box_preds = output['box_preds'].data
-            cls_preds = output['cls_preds'].data
-
-            print(box_preds)
-            print(cls_preds)
+            # output = self.solver.test_nets[0].blobs
+            # box_preds = output['box_preds'].data
+            # cls_preds = output['cls_preds'].data
 
             #self.predict(batch_box_preds = box_preds, batch_cls_preds = cls_preds)
 

@@ -208,7 +208,7 @@ class SparseMiddleExtractor(nn.Module):
             Linear = change_default_args(bias=True)(nn.Linear)
         sparse_shape = np.array(output_shape[1:4]) + [1, 0, 0]
         # sparse_shape[0] = 11
-        print(sparse_shape)
+        # print(sparse_shape)
         self.scn_input = scn.InputLayer(3, sparse_shape.tolist())
         self.voxel_output_shape = output_shape
         middle_layers = []
@@ -453,6 +453,9 @@ class RPN(nn.Module):
                 sum(num_upsample_filters), num_anchor_per_loc * 2, 1)
 
     def forward(self, x, bev=None):
+        #print("[debug - 0]", x)
+        #print("[debug shape - 0]", x.shape)
+        #print("[debug sum - 0]", x.sum())
         x = self.block1(x)
         up1 = self.deconv1(x)
         if self._use_bev:
@@ -466,9 +469,15 @@ class RPN(nn.Module):
         x = torch.cat([up1, up2, up3], dim=1)
         box_preds = self.conv_box(x)
         cls_preds = self.conv_cls(x)
+        #print(cls_preds)
+        #print(cls_preds.shape)
         # [N, C, y(H), x(W)]
         box_preds = box_preds.permute(0, 2, 3, 1).contiguous()
         cls_preds = cls_preds.permute(0, 2, 3, 1).contiguous()
+        #print("**************")
+        #print("[debug - 0]", cls_preds)
+        #print("[debug shape - 0]", cls_preds.shape)
+        #print("[debug sum - 0]", cls_preds.sum())
         ret_dict = {
             "box_preds": box_preds,
             "cls_preds": cls_preds,
@@ -654,14 +663,27 @@ class VoxelNet(nn.Module):
         # num_points: [num_voxels]
         # coors: [num_voxels, 4]
         #print("[debug] voxel", voxels.shape)
+        print("[debug] image -index match to cafffe ", example["image_idx"])
         voxel_features = self.voxel_feature_extractor(voxels, num_points, coors)
-        #print("[debug] voxel feature ", voxel_features.shape)
+        # print("[debug] voxel feature  shape", voxel_features.shape)
+        # print("[debug] voxel feature ", voxel_features)
+        # for i in range(100):
+    	# print("[debug] voxel feature index 0", voxel_features[i])
+        # exit()
         if self._use_sparse_rpn:
             preds_dict = self.rpn(voxel_features, coors, batch_size_dev)
 
         else:
             spatial_features = self.middle_feature_extractor(
                 voxel_features, coors, batch_size_dev)
+            #debug=0
+            #for i in range(495):
+                #if spatial_features[0][0][i].sum()>0:
+                    #debug+=1
+                    # print("index", i)
+                    #print("[debug] spatial_features ", spatial_features[0][0][i])
+            #print("total", debug)
+            #exit()
             if self._use_bev:
                 preds_dict = self.rpn(spatial_features, example["bev_map"])
             else:
@@ -681,6 +703,7 @@ class VoxelNet(nn.Module):
                 neg_cls_weight=self._neg_cls_weight,
                 loss_norm_type=self._loss_norm_type,
                 dtype=voxels.dtype)
+            # print(reg_weights.shape)
             cls_targets = labels * cared.type_as(labels)
             cls_targets = cls_targets.unsqueeze(-1)
 
@@ -698,8 +721,8 @@ class VoxelNet(nn.Module):
                 encode_background_as_zeros=self._encode_background_as_zeros,
                 box_code_size=self._box_coder.code_size,
             )
-            print("loc loss", loc_loss.sum())
-            print("cls loss", cls_loss.sum())
+            # print("loc loss", loc_loss.sum())
+            # print("cls loss", cls_loss.sum())
             loc_loss_reduced = loc_loss.sum() / batch_size_dev
             loc_loss_reduced *= self._loc_loss_weight
             cls_pos_loss, cls_neg_loss = _get_pos_neg_loss(cls_loss, labels)
@@ -708,6 +731,7 @@ class VoxelNet(nn.Module):
             cls_loss_reduced = cls_loss.sum() / batch_size_dev
             cls_loss_reduced *= self._cls_loss_weight
             loss = loc_loss_reduced + cls_loss_reduced
+            #print("loss", loss)
             if self._use_direction_classifier:
                 dir_targets = get_direction_target(example['anchors'],
                                                    reg_targets)
@@ -754,6 +778,8 @@ class VoxelNet(nn.Module):
         t = time.time()
         batch_box_preds = preds_dict["box_preds"]
         batch_cls_preds = preds_dict["cls_preds"]
+        #print("[debug-0]", batch_cls_preds)
+        #print("[debug-0]", batch_cls_preds.sum())
         batch_box_preds = batch_box_preds.view(batch_size, -1,
                                                self._box_coder.code_size)
         num_class_with_bg = self._num_class
@@ -764,6 +790,10 @@ class VoxelNet(nn.Module):
                                                num_class_with_bg)
         batch_box_preds = self._box_coder.decode_torch(batch_box_preds,
                                                        batch_anchors)
+        # print("batch_cls_preds", batch_cls_preds)
+        #print("batch_box_preds", batch_box_preds)
+        #print("batch_box_preds", batch_box_preds.shape)
+
         if self._use_direction_classifier:
             batch_dir_preds = preds_dict["dir_cls_preds"]
             batch_dir_preds = batch_dir_preds.view(batch_size, -1, 2)
@@ -776,8 +806,11 @@ class VoxelNet(nn.Module):
                 batch_Trv2c, batch_P2, batch_imgidx, batch_anchors_mask
         ):
             if a_mask is not None:
+                #print("[debug-0]", cls_preds)
+                #print("[debug-0]", cls_preds.sum())
                 box_preds = box_preds[a_mask]
                 cls_preds = cls_preds[a_mask]
+                # print("cls_preds : ", cls_preds)
             if self._use_direction_classifier:
                 if a_mask is not None:
                     dir_preds = dir_preds[a_mask]
@@ -786,7 +819,12 @@ class VoxelNet(nn.Module):
             if self._encode_background_as_zeros:
                 # this don't support softmax
                 assert self._use_sigmoid_score is True
+                #print("[debug-0]", cls_preds)
+                #print("[debug-0]", cls_preds.sum())
+                #print("[debug-0 shape]", cls_preds.shape)
                 total_scores = torch.sigmoid(cls_preds)
+                #print("[debug-1]", total_scores)
+                #print("[debug-1 shape]", total_scores.shape)
             else:
                 # encode background as first element in one-hot vector
                 if self._use_sigmoid_score:
@@ -857,13 +895,18 @@ class VoxelNet(nn.Module):
                         dtype=torch.long)
                 else:
                     top_scores, top_labels = torch.max(total_scores, dim=-1)
-
+                #print("[debug-0]", top_scores)
+                #print("[debug-0 shape]", top_scores.shape)
                 if self._nms_score_threshold > 0.0:
                     thresh = torch.tensor(
                         [self._nms_score_threshold],
                         device=total_scores.device).type_as(total_scores)
                     top_scores_keep = (top_scores >= thresh)
+                    #print("[debug-1]", top_scores_keep)
+                    #print("[debug-1 shape]", top_scores_keep.shape)
                     top_scores = top_scores.masked_select(top_scores_keep)
+                    #print("[debug-2]", top_scores)
+                    # print("[debug-2 shape]", top_scores.shape)
                 if top_scores.shape[0] != 0:
                     if self._nms_score_threshold > 0.0:
                         box_preds = box_preds[top_scores_keep]
@@ -871,12 +914,16 @@ class VoxelNet(nn.Module):
                             dir_labels = dir_labels[top_scores_keep]
                         top_labels = top_labels[top_scores_keep]
                     boxes_for_nms = box_preds[:, [0, 1, 3, 4, 6]]
+                    #print("[debug]", boxes_for_nms)
+                    # print("[debug-3 shape]", boxes_for_nms.shape)
                     if not self._use_rotate_nms:
                         box_preds_corners = box_torch_ops.center_to_corner_box2d(
                             boxes_for_nms[:, :2], boxes_for_nms[:, 2:4],
                             boxes_for_nms[:, 4])
+                        
                         boxes_for_nms = box_torch_ops.corner_to_standup_nd(
                             box_preds_corners)
+                        
                     # the nms in 3d detection just remove overlap boxes.
                     selected = nms_func(
                         boxes_for_nms,
@@ -1059,13 +1106,25 @@ def create_loss(loc_loss_ftor,
     if encode_rad_error_by_sin:
         # sin(a - b) = sinacosb-cosasinb
         box_preds, reg_targets = add_sin_difference(box_preds, reg_targets)
+        #print(box_preds)
+        #print("**************")
+        #print(reg_targets)
+        #print("losse_sum_1",0.5*(torch.pow((reg_targets-box_preds), 2)).sum()/107136)
+        #print(box_preds.shape)
     loc_losses = loc_loss_ftor(
         box_preds, reg_targets, weights=reg_weights)  # [N, M]
+
+    #print("cls loss", cls_preds)
+    #print("cls loss shape", cls_preds.shape)
+    #print("cls loss sum", cls_preds.sum())
+    #print("cls loss sum", cls_preds)
+    #print("one_hot_targets sum", one_hot_targets.sum())
+
     cls_losses = cls_loss_ftor(
         cls_preds, one_hot_targets, weights=cls_weights)  # [N, M]
 
     # print("loc loss", loc_losses)
-    # print("cls loss", cls_losses)
+    # print("cls loss", cls_losses.sum())
     return loc_losses, cls_losses
 
 

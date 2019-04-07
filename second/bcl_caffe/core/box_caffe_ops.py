@@ -58,6 +58,53 @@ def second_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smoo
         boxes ([N, 7] Tensor): normal boxes: x, y, z, w, l, h, r
         anchors ([N, 7] Tensor): anchors
     """
+
+    # print(anchors.shape) #([1, 107136, 7])
+    # print(anchors)
+    xa, ya, za, wa, la, ha, ra = np.split(anchors, 7,  axis=-1)
+    # print(xa)
+    # print(xa.shape) #([1, 107136, 1])
+
+    if encode_angle_to_vector:
+        xt, yt, zt, wt, lt, ht, rtx, rty = np.split(
+            box_encodings, 1, dim=-1)
+
+    else:
+        xt, yt, zt, wt, lt, ht, rt = np.split(box_encodings, 7, axis=-1)
+
+    # xt, yt, zt, wt, lt, ht, rt = torch.split(box_encodings, 1, dim=-1)
+    za = za + ha / 2
+    diagonal = np.sqrt(la**2 + wa**2)
+    xg = xt * diagonal + xa
+    yg = yt * diagonal + ya
+    zg = zt * ha + za
+    if smooth_dim:
+        lg = (lt + 1) * la
+        wg = (wt + 1) * wa
+        hg = (ht + 1) * ha
+    else:
+
+        lg = np.exp(lt) * la
+        wg = np.exp(wt) * wa
+        hg = np.exp(ht) * ha
+    if encode_angle_to_vector:
+        rax = np.cos(ra)
+        ray = np.sin(ra)
+        rgx = rtx + rax
+        rgy = rty + ray
+        rg = np.atan2(rgy, rgx)
+    else:
+        rg = rt + ra
+    zg = zg - hg / 2
+    return np.concatenate([xg, yg, zg, wg, lg, hg, rg], axis=-1)
+
+
+def second_box_decode_torch(box_encodings, anchors, encode_angle_to_vector=False, smooth_dim=False):
+    """box decode for VoxelNet in lidar
+    Args:
+        boxes ([N, 7] Tensor): normal boxes: x, y, z, w, l, h, r
+        anchors ([N, 7] Tensor): anchors
+    """
     xa, ya, za, wa, la, ha, ra = torch.split(anchors, 1, dim=-1)
     if encode_angle_to_vector:
         xt, yt, zt, wt, lt, ht, rtx, rty = torch.split(
@@ -162,15 +209,49 @@ def bev_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smooth_
 
 def corners_nd(dims, origin=0.5):
     """generate relative box corners based on length per dim and
-    origin point. 
-    
+    origin point.
+
     Args:
         dims (float array, shape=[N, ndim]): array of length per dim
         origin (list or array or float): origin point relate to smallest point.
-        dtype (output dtype, optional): Defaults to np.float32 
-    
+        dtype (output dtype, optional): Defaults to np.float32
+
     Returns:
-        float array, shape=[N, 2 ** ndim, ndim]: returned corners. 
+        float array, shape=[N, 2 ** ndim, ndim]: returned corners.
+        point layout example: (2d) x0y0, x0y1, x1y0, x1y1;
+            (3d) x0y0z0, x0y0z1, x0y1z0, x0y1z1, x1y0z0, x1y0z1, x1y1z0, x1y1z1
+            where x0 < x1, y0 < y1, z0 < z1
+    """
+    ndim = int(dims.shape[1])
+    if isinstance(origin, float):
+        origin = [origin] * ndim
+    corners_norm = np.stack(
+        np.unravel_index(np.arange(2**ndim), [2] * ndim), axis=1)
+    # now corners_norm has format: (2d) x0y0, x0y1, x1y0, x1y1
+    # (3d) x0y0z0, x0y0z1, x0y1z0, x0y1z1, x1y0z0, x1y0z1, x1y1z0, x1y1z1
+    # so need to convert to a format which is convenient to do other computing.
+    # for 2d boxes, format is clockwise start from minimum point
+    # for 3d boxes, please draw them by your hand.
+    if ndim == 2:
+        # generate clockwise box corners
+        corners_norm = corners_norm[[0, 1, 3, 2]]
+    elif ndim == 3:
+        corners_norm = corners_norm[[0, 1, 3, 2, 4, 5, 7, 6]]
+    corners_norm = corners_norm - np.array(origin)
+    corners = dims.reshape(-1, 1, ndim) * corners_norm.reshape(1, 2**ndim, ndim)
+    return corners
+
+def corners_nd_torch(dims, origin=0.5):
+    """generate relative box corners based on length per dim and
+    origin point.
+
+    Args:
+        dims (float array, shape=[N, ndim]): array of length per dim
+        origin (list or array or float): origin point relate to smallest point.
+        dtype (output dtype, optional): Defaults to np.float32
+
+    Returns:
+        float array, shape=[N, 2 ** ndim, ndim]: returned corners.
         point layout example: (2d) x0y0, x0y1, x1y0, x1y1;
             (3d) x0y0z0, x0y0z1, x0y1z0, x0y1z1, x1y0z0, x1y0z1, x1y1z0, x1y1z1
             where x0 < x1, y0 < y1, z0 < z1
@@ -196,18 +277,17 @@ def corners_nd(dims, origin=0.5):
     corners = dims.view(-1, 1, ndim) * corners_norm.view(1, 2**ndim, ndim)
     return corners
 
-
 def corners_2d(dims, origin=0.5):
     """generate relative 2d box corners based on length per dim and
     origin point.
-    
+
     Args:
         dims (float array, shape=[N, 2]): array of length per dim
         origin (list or array or float): origin point relate to smallest point.
-        dtype (output dtype, optional): Defaults to np.float32 
-    
+        dtype (output dtype, optional): Defaults to np.float32
+
     Returns:
-        float array, shape=[N, 4, 2]: returned corners. 
+        float array, shape=[N, 4, 2]: returned corners.
         point layout: x0y0, x0y1, x1y1, x1y0
     """
     return corners_nd(dims, origin)
@@ -217,13 +297,51 @@ def corner_to_standup_nd(boxes_corner):
     ndim = boxes_corner.shape[2]
     standup_boxes = []
     for i in range(ndim):
+        standup_boxes.append(np.amin(boxes_corner[:, :, i], axis=1))
+    for i in range(ndim):
+        standup_boxes.append(np.amax(boxes_corner[:, :, i], axis=1))
+    return np.stack(standup_boxes, axis=1) ## TODO: double check
+
+def corner_to_standup_nd_torch(boxes_corner):
+    ndim = boxes_corner.shape[2]
+    standup_boxes = []
+    for i in range(ndim):
         standup_boxes.append(torch.min(boxes_corner[:, :, i], dim=1)[0])
     for i in range(ndim):
         standup_boxes.append(torch.max(boxes_corner[:, :, i], dim=1)[0])
     return torch.stack(standup_boxes, dim=1)
 
-
 def rotation_3d_in_axis(points, angles, axis=0):
+    # points: [N, point_size, 3]
+    # angles: [N]
+    rot_sin = np.sin(angles)
+    rot_cos = np.cos(angles)
+    ones = np.ones_like(rot_cos)
+    zeros = np.zeros_like(rot_cos)
+    if axis == 1:
+        rot_mat_T = np.stack([
+            np.stack([rot_cos, zeros, -rot_sin]),
+            np.stack([zeros, ones, zeros]),
+            np.stack([rot_sin, zeros, rot_cos])
+        ])
+    elif axis == 2 or axis == -1:
+        rot_mat_T = np.stack([
+            np.stack([rot_cos, -rot_sin, zeros]),
+            np.stack([rot_sin, rot_cos, zeros]),
+            np.stack([zeros, zeros, ones])
+        ])
+    elif axis == 0:
+        rot_mat_T = np.stack([
+            np.stack([zeros, rot_cos, -rot_sin]),
+            np.stack([zeros, rot_sin, rot_cos]),
+            np.stack([ones, zeros, zeros])
+        ])
+    else:
+        raise ValueError("axis should in range")
+
+    return np.einsum('aij,jka->aik', points, rot_mat_T)
+
+def rotation_3d_in_axis_torch(points, angles, axis=0):
     # points: [N, point_size, 3]
     # angles: [N]
     rot_sin = torch.sin(angles)
@@ -284,7 +402,24 @@ def rotation_points_single_angle(points, angle, axis=0):
 
 def rotation_2d(points, angles):
     """rotation 2d points based on origin point clockwise when angle positive.
-    
+
+    Args:
+        points (float array, shape=[N, point_size, 2]): points to be rotated.
+        angles (float array, shape=[N]): rotation angle.
+
+    Returns:
+        float array: same shape as points
+    """
+    rot_sin = np.sin(angles)
+    rot_cos = np.cos(angles)
+    rot_mat_T = np.stack(
+        [np.stack([rot_cos, -rot_sin]),
+         np.stack([rot_sin, rot_cos])])
+    return np.einsum('aij,jka->aik', points, rot_mat_T)
+
+def rotation_2d_torch(points, angles):
+    """rotation 2d points based on origin point clockwise when angle positive.
+
     Args:
         points (float array, shape=[N, point_size, 2]): points to be rotated.
         angles (float array, shape=[N]): rotation angle.
@@ -299,14 +434,13 @@ def rotation_2d(points, angles):
          tstack([rot_sin, rot_cos])])
     return torch.einsum('aij,jka->aik', (points, rot_mat_T))
 
-
 def center_to_corner_box3d(centers,
                            dims,
                            angles,
                            origin=[0.5, 1.0, 0.5],
                            axis=1):
     """convert kitti locations, dimensions and angles to corners
-    
+
     Args:
         centers (float array, shape=[N, 3]): locations in kitti label file.
         dims (float array, shape=[N, 3]): dimensions in kitti label file.
@@ -323,18 +457,39 @@ def center_to_corner_box3d(centers,
     corners = corners_nd(dims, origin=origin)
     # corners: [N, 8, 3]
     corners = rotation_3d_in_axis(corners, angles, axis=axis)
-    corners += centers.view(-1, 1, 3)
+    corners += centers.reshape(-1, 1, 3) #centers.view(-1, 1, 3)
     return corners
 
 
 def center_to_corner_box2d(centers, dims, angles=None, origin=0.5):
     """convert kitti locations, dimensions and angles to corners
-    
+
     Args:
         centers (float array, shape=[N, 2]): locations in kitti label file.
         dims (float array, shape=[N, 2]): dimensions in kitti label file.
         angles (float array, shape=[N]): rotation_y in kitti label file.
-    
+
+    Returns:
+        [type]: [description]
+    """
+    # 'length' in kitti format is in x axis.
+    # xyz(hwl)(kitti label file)<->xyz(lhw)(camera)<->z(-x)(-y)(wlh)(lidar)
+    # center in kitti format is [0.5, 1.0, 0.5] in xyz.
+    corners = corners_nd(dims, origin=origin)
+    # corners: [N, 4, 2]
+    if angles is not None:
+        corners = rotation_2d(corners, angles)
+    corners += centers.reshape(-1, 1, 2)
+    return corners
+
+def center_to_corner_box2d_torch(centers, dims, angles=None, origin=0.5):
+    """convert kitti locations, dimensions and angles to corners
+
+    Args:
+        centers (float array, shape=[N, 2]): locations in kitti label file.
+        dims (float array, shape=[N, 2]): dimensions in kitti label file.
+        angles (float array, shape=[N]): rotation_y in kitti label file.
+
     Returns:
         [type]: [description]
     """
@@ -348,8 +503,17 @@ def center_to_corner_box2d(centers, dims, angles=None, origin=0.5):
     corners += centers.view(-1, 1, 2)
     return corners
 
-
 def project_to_image(points_3d, proj_mat):
+    points_num = list(points_3d.shape)[:-1]
+    points_shape = np.concatenate([points_num, [1]], axis=0).tolist()
+    points_4 = np.concatenate(
+        [points_3d, np.zeros(shape=tuple(points_shape))], axis=-1)
+    # point_2d = points_4 @ tf.transpose(proj_mat, [1, 0])
+    point_2d = np.matmul(points_4, np.transpose(proj_mat))
+    point_2d_res = point_2d[..., :2] / point_2d[..., 2:3]
+    return point_2d_res
+
+def project_to_image_torch(points_3d, proj_mat):
     points_num = list(points_3d.shape)[:-1]
     points_shape = np.concatenate([points_num, [1]], axis=0).tolist()
     points_4 = torch.cat(
@@ -370,6 +534,13 @@ def camera_to_lidar(points, r_rect, velo2cam):
 
 def lidar_to_camera(points, r_rect, velo2cam):
     num_points = points.shape[0]
+    points = np.concatenate(
+        [points, np.ones(shape = (num_points, 1))], axis=-1)
+    camera_points = points @  np.transpose((r_rect @ velo2cam))
+    return camera_points[..., :3]
+
+def lidar_to_camera_torch(points, r_rect, velo2cam):
+    num_points = points.shape[0]
     points = torch.cat(
         [points, torch.ones(num_points, 1).type_as(points)], dim=-1)
     camera_points = points @ (r_rect @ velo2cam).t()
@@ -385,6 +556,13 @@ def box_camera_to_lidar(data, r_rect, velo2cam):
 
 
 def box_lidar_to_camera(data, r_rect, velo2cam):
+    xyz_lidar = data[..., 0:3]
+    w, l, h = data[..., 3:4], data[..., 4:5], data[..., 5:6]
+    r = data[..., 6:7]
+    xyz = lidar_to_camera(xyz_lidar, r_rect, velo2cam)
+    return np.concatenate([xyz, l, h, w, r], axis=-1)
+
+def box_lidar_to_camera_torch(data, r_rect, velo2cam):
     xyz_lidar = data[..., 0:3]
     w, l, h = data[..., 3:4], data[..., 4:5], data[..., 5:6]
     r = data[..., 6:7]
@@ -441,7 +619,33 @@ def multiclass_nms(nms_func,
             selected_per_class.append(None)
     return selected_per_class
 
+
 def nms(bboxes,
+        scores,
+        pre_max_size=None,
+        post_max_size=None,
+        iou_threshold=0.5):
+    if pre_max_size is not None:
+        num_keeped_scores = scores.shape[0]
+        pre_max_size = min(num_keeped_scores, pre_max_size)
+        indices = np.argsort(scores)[:pre_max_size]
+        scores = scores[indices]
+        bboxes = bboxes[indices] ## TODO: double check
+    dets = np.concatenate([bboxes, np.expand_dims(scores, axis=-1)], axis=1)
+    # dets_np = dets.data.cpu().numpy()
+    if len(dets) == 0:
+        keep = np.array([], dtype=np.int64)
+    else:
+        ret = np.array(nms_gpu(dets, iou_threshold), dtype=np.int64)
+        keep = ret[:post_max_size]
+    if keep.shape[0] == 0:
+        return None
+    if pre_max_size is not None:
+        return indices[keep]
+    else:
+        return keep
+
+def nms_torch(bboxes,
         scores,
         pre_max_size=None,
         post_max_size=None,

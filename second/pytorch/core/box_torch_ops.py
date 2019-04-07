@@ -58,7 +58,11 @@ def second_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smoo
         boxes ([N, 7] Tensor): normal boxes: x, y, z, w, l, h, r
         anchors ([N, 7] Tensor): anchors
     """
+    #print(anchors.shape)
+    #print("split in box_torch_ops.py")
     xa, ya, za, wa, la, ha, ra = torch.split(anchors, 1, dim=-1)
+    #print(xa.shape)
+
     if encode_angle_to_vector:
         xt, yt, zt, wt, lt, ht, rtx, rty = torch.split(
             box_encodings, 1, dim=-1)
@@ -352,6 +356,7 @@ def center_to_corner_box2d(centers, dims, angles=None, origin=0.5):
 def project_to_image(points_3d, proj_mat):
     points_num = list(points_3d.shape)[:-1]
     points_shape = np.concatenate([points_num, [1]], axis=0).tolist()
+    #print("pj", torch.zeros(*points_shape).shape)
     points_4 = torch.cat(
         [points_3d, torch.zeros(*points_shape).type_as(points_3d)], dim=-1)
     # point_2d = points_4 @ tf.transpose(proj_mat, [1, 0])

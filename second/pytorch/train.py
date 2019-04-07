@@ -188,7 +188,7 @@ def train(config_path,
     dataloader = torch.utils.data.DataLoader(
         dataset,
         batch_size=input_cfg.batch_size,
-        shuffle=True,
+        shuffle=False, #for debug
         num_workers=input_cfg.num_workers,
         pin_memory=False,
         collate_fn=merge_second_batch,
@@ -250,6 +250,7 @@ def train(config_path,
                 # box_preds = ret_dict["box_preds"]
                 cls_preds = ret_dict["cls_preds"]
                 loss = ret_dict["loss"].mean()
+                # print("loss", loss)
                 cls_loss_reduced = ret_dict["cls_loss_reduced"].mean()
                 loc_loss_reduced = ret_dict["loc_loss_reduced"].mean()
                 cls_pos_loss = ret_dict["cls_pos_loss"]

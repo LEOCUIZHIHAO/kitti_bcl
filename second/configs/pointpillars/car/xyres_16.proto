@@ -99,7 +99,7 @@ train_input_reader: {
   record_file_path: "/home/ubuntu/leo_jim_test/second.pytorch/second/data/sets/kitti_pillar/kitti_train.tfrecord"
   class_names: ["Car"]
   max_num_epochs : 160
-  batch_size: 2
+  batch_size: 1
   prefetch_size : 25
   max_number_of_voxels: 12000
   shuffle_points: true
@@ -163,7 +163,7 @@ train_config: {
   inter_op_parallelism_threads: 4
   intra_op_parallelism_threads: 4
   steps: 296960 # 1856 steps per epoch * 160 epochs
-  steps_per_eval: 9280 # 1856 steps per epoch * 5 epochs
+  steps_per_eval: 50 # 1856 steps per epoch * 5 epochs #9280 
   save_checkpoints_secs : 1800 # half hour
   save_summary_steps : 10
   enable_mixed_precision: false
@@ -174,7 +174,7 @@ train_config: {
 eval_input_reader: {
   record_file_path: "/home/ubuntu/leo_jim_test/second.pytorch/second/data/sets/kitti_pillar/kitti_val.tfrecord"
   class_names: ["Car"]
-  batch_size: 2
+  batch_size: 1
   max_num_epochs : 160
   prefetch_size : 25
   max_number_of_voxels: 12000

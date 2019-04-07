@@ -189,6 +189,8 @@ class WeightedSmoothL1LocalizationLoss(Loss):
     if self._codewise:
       anchorwise_smooth_l1norm = loss
       if weights is not None:
+        #print("weights", weights.unsqueeze(-1))
+        #print(weights.unsqueeze(-1).shape)
         anchorwise_smooth_l1norm *= weights.unsqueeze(-1)
     else:
       anchorwise_smooth_l1norm = torch.sum(loss, 2)#  * weights
@@ -287,6 +289,11 @@ class SigmoidFocalClassificationLoss(Loss):
         representing the value of the loss function.
     """
     weights = weights.unsqueeze(2)
+    #for i in range(weights.shape[1]):
+        #if weights[0][i]>0:
+            #print(weights[0][i])
+    #print(weights.shape)
+    #print(weights.sum())
     if class_indices is not None:
       weights *= indices_to_dense_vector(class_indices,
             prediction_tensor.shape[2]).view(1, 1, -1).type_as(prediction_tensor)
@@ -305,6 +312,9 @@ class SigmoidFocalClassificationLoss(Loss):
 
     focal_cross_entropy_loss = (modulating_factor * alpha_weight_factor *
                                 per_entry_cross_ent)
+    #print("fc_loss", focal_cross_entropy_loss.sum())
+    #print("fc_loss / sample", focal_cross_entropy_loss.sum()/107136)
+    #print("fc_loss with weight", (focal_cross_entropy_loss * weights).sum())
     return focal_cross_entropy_loss * weights
 
 

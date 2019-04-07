@@ -29,8 +29,10 @@ class Dataset(object):
 class KittiDataset(Dataset):
     def __init__(self, info_path, root_path, num_point_features,
                  target_assigner, feature_map_size, prep_func):
+        #print("info path _________________", info_path)
         with open(info_path, 'rb') as f:
             infos = pickle.load(f)
+        #print("info **********************", infos)
         #self._kitti_infos = kitti.filter_infos_by_used_classes(infos, class_names)
         self._root_path = root_path
         self._kitti_infos = infos
@@ -61,6 +63,7 @@ class KittiDataset(Dataset):
         return self._kitti_infos
 
     def __getitem__(self, idx):
+        # print("[debug] image_index ", self._kitti_infos[idx]['image_idx'])
         return _read_and_prep_v9(
             info=self._kitti_infos[idx],
             root_path=self._root_path,

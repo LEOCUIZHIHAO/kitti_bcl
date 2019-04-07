@@ -15,22 +15,6 @@ layer {
   }
 }
 layer {
-  name: "data"
-  type: "Python"
-  top: "data"
-  top: "coors"
-  top: "labels"
-  top: "reg_targets"
-  include {
-    phase: TEST
-  }
-  python_param {
-    module: "custom_layers"
-    layer: "InputKittiData"
-    param_str: "{\'config_path\': \'configs/pointpillars/car/xyres_16.proto\', \'model_dir\': \'./test_caffe_model\', \'subset\': \'train\'}"
-  }
-}
-layer {
   name: "Mlp"
   type: "Convolution"
   bottom: "data"
@@ -38,20 +22,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 0.10000000149011612
-  }
   convolution_param {
     num_output: 64
+    bias_term: false
     pad: 0
     kernel_size: 1
     stride: 1
     weight_filler {
       type: "xavier"
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
+      std: 0.009999999776482582
     }
     engine: CAFFE
   }
@@ -69,9 +48,19 @@ layer {
   top: "ReLU1"
 }
 layer {
+  name: "Test_Layer"
+  type: "Python"
+  bottom: "ReLU1"
+  top: "Python1"
+  python_param {
+    module: "custom_layers"
+    layer: "TestLayer"
+  }
+}
+layer {
   name: "Pooling1"
   type: "Pooling"
-  bottom: "ReLU1"
+  bottom: "Python1"
   top: "Pooling1"
   pooling_param {
     pool: MAX
@@ -100,21 +89,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 64
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 2
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -139,21 +122,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 64
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -178,21 +155,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 64
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -217,21 +188,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 64
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -256,21 +221,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 0
     kernel_size: 1
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -283,21 +242,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
-    num_output: 64
+    num_output: 128
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 2
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -322,21 +275,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -361,21 +308,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -400,21 +341,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -439,21 +374,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -478,21 +407,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -517,21 +440,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 0
     kernel_size: 2
     stride: 2
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -544,21 +461,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
-    num_output: 64
+    num_output: 256
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 2
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -583,21 +494,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 256
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -622,21 +527,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 256
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -661,21 +560,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 256
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -700,21 +593,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 256
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -739,21 +626,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 256
+    bias_term: false
     pad: 1
     kernel_size: 3
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -778,21 +659,15 @@ layer {
   param {
     lr_mult: 1.0
   }
-  param {
-    lr_mult: 2.0
-  }
   convolution_param {
     num_output: 128
+    bias_term: false
     pad: 0
     kernel_size: 4
     stride: 4
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -850,20 +725,17 @@ layer {
     lr_mult: 1.0
   }
   param {
-    lr_mult: 2.0
+    lr_mult: 1.0
   }
   convolution_param {
     num_output: 2
+    bias_term: true
     pad: 0
     kernel_size: 1
     stride: 1
     weight_filler {
       type: "xavier"
       std: 0.10000000149011612
-    }
-    bias_filler {
-      type: "constant"
-      value: 0.0
     }
     engine: CAFFE
   }
@@ -891,6 +763,7 @@ layer {
   }
   convolution_param {
     num_output: 14
+    bias_term: true
     pad: 0
     kernel_size: 1
     stride: 1
@@ -898,15 +771,11 @@ layer {
       type: "xavier"
       std: 0.10000000149011612
     }
-    bias_filler {
-      type: "constant"
-      value: 0.0
-    }
     engine: CAFFE
   }
 }
 layer {
-  name: "RegLossCreate"
+  name: "RegLossCreate_train"
   type: "Python"
   bottom: "Convolution2"
   bottom: "reg_targets"
@@ -922,6 +791,8 @@ layer {
   type: "Python"
   bottom: "labels"
   top: "cared"
+  top: "reg_outside_weights"
+  top: "reg_inside_weights"
   python_param {
     module: "custom_layers"
     layer: "PrepareLossWeight"
@@ -944,6 +815,7 @@ layer {
   bottom: "cls_preds"
   bottom: "_labels"
   top: "cls_loss"
+  loss_weight: 1.0
   focal_loss_param {
     axis: 1
     alpha: 0.25
@@ -955,9 +827,12 @@ layer {
   type: "SmoothL1Loss"
   bottom: "box_preds"
   bottom: "_reg_targets"
+  bottom: "reg_inside_weights"
+  bottom: "reg_outside_weights"
   top: "reg_loss"
-  loss_weight: 1.0
+  loss_weight: 2.0
   smooth_l1_loss_param {
     sigma: 1.0
   }
 }
+

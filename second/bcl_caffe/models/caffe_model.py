@@ -23,7 +23,7 @@ def test_v1(phase,
         dataset_params_train['subset'] = phase
 
         datalayer_train = L.Python(name='data', include=dict(phase=caffe.TRAIN),
-                                   ntop= 4, python_param=dict(module='custom_layers', layer='InputTrain',
+                                   ntop= 4, python_param=dict(module='custom_layers', layer='InputKittiData',
                                                      param_str=repr(dataset_params_train)))
 
         n.data, n.coors, n.labels, n.reg_targets = datalayer_train
@@ -33,10 +33,10 @@ def test_v1(phase,
         dataset_params_eval['subset'] = phase
 
         datalayer_eval = L.Python(name='data', include=dict(phase=caffe.TEST),
-                                  ntop= 2, python_param=dict(module='custom_layers', layer='InputEval',
+                                  ntop= 9, python_param=dict(module='custom_layers', layer='InputKittiData',
                                                      param_str=repr(dataset_params_eval)))
 
-        n.data, n.coors = datalayer_eval
+        n.data, n.coors, n.anchors, n.rect, n.trv2c, n.p2, n.anchors_mask, n.img_idx, n.img_shape = datalayer_eval
 
     if deploy:
         print("[debug] run deploy in caffe_model.py")
@@ -49,14 +49,31 @@ def test_v1(phase,
         n['Mlp'] = L.Convolution(top_prev,
                              convolution_param=dict(num_output=64,
                                                     kernel_size=1, stride=1, pad=0,
-                                                    weight_filler=dict(type = 'xavier'), #,std = 0.1
-                                                    bias_filler=dict(type='constant', value=0),
+                                                    weight_filler=dict(type = 'xavier', std = 0.01),
+                                                    bias_term = False,
+                                                    #bias_filler=dict(type='constant', value=0),
                                                     engine=1,
                                                     ),
-                             param=[dict(lr_mult=1), dict(lr_mult=0.1)])
+                             param=[dict(lr_mult=1)])
+        # top_prev = L.Reshape(top_prev, reshape_param=dict(shape=dict(dim=[0,0,-1,1])))
+
+        # n['Mlp'] = L.InnerProduct(top_prev,
+        #                      inner_product_param=dict(num_output=64,
+        #                                             weight_filler=dict(type = 'xavier'), #,std = 0.1
+        #                                             bias_term = False,
+        #                                             #bias_filler=dict(type='constant', value=0),
+        #                                             ),
+        #                      param=[dict(lr_mult=1)])
 
         top_prev = L.BatchNorm(n['Mlp'])
         top_prev = L.ReLU(top_prev)
+
+        top_prev = L.Python(top_prev, name = "Test_Layer",
+                                        ntop = 1,
+                                        python_param=dict(
+                                                    module='custom_layers',
+                                                    layer='TestLayer')
+                                                    )
 
     top_prev = L.Pooling(top_prev, pooling_param = dict(kernel_h=1, kernel_w=100, stride=1,
                                  pool = caffe.params.Pooling.MAX))
@@ -79,10 +96,11 @@ def test_v1(phase,
                                          convolution_param=dict(num_output=num_filters[0],
                                                                 kernel_size=3, stride=layer_strides[0], pad=1,
                                                                 weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                bias_filler=dict(type='constant', value=0),
+                                                                bias_term = False,
+                                                                #bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=2)]) #0.1
+                                         param=[dict(lr_mult=1)]) #0.1
 
     top_prev = L.BatchNorm(n['init_conv1'])
     top_prev = L.ReLU(top_prev)
@@ -92,10 +110,11 @@ def test_v1(phase,
                                              convolution_param=dict(num_output=num_filters[0],
                                                                     kernel_size=3, stride=1, pad=1,
                                                                     weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                    bias_filler=dict(type='constant', value=0),
+                                                                    bias_term = False,
+                                                                    #bias_filler=dict(type='constant', value=0),
                                                                     engine=1,
                                                                     ),
-                                             param=[dict(lr_mult=1), dict(lr_mult=2)]) #0.1
+                                             param=[dict(lr_mult=1)]) #0.1
 
         top_prev = L.BatchNorm(n['rpn_conv1_' + str(idx)])
         top_prev = L.ReLU(top_prev)
@@ -105,10 +124,11 @@ def test_v1(phase,
                                          convolution_param=dict(num_output=num_upsample_filters[0],
                                                                 kernel_size=upsample_strides[0], stride=upsample_strides[0], pad=0,
                                                                 weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                bias_filler=dict(type='constant', value=0),
+                                                                bias_term = False,
+                                                                #bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
+                                         param=[dict(lr_mult=1)])
 
     deconv1 = L.BatchNorm(n['rpn_deconv1'])
     deconv1 = L.ReLU(deconv1)
@@ -120,10 +140,11 @@ def test_v1(phase,
                                          convolution_param=dict(num_output=num_filters[1],
                                                                 kernel_size=3, stride=layer_strides[1], pad=1,
                                                                 weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                bias_filler=dict(type='constant', value=0),
+                                                                bias_term = False,
+                                                                #bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
+                                         param=[dict(lr_mult=1)])
 
     top_prev = L.BatchNorm(n['init_conv2'])
     top_prev = L.ReLU(top_prev)
@@ -133,10 +154,11 @@ def test_v1(phase,
                                              convolution_param=dict(num_output=num_filters[1],
                                                                     kernel_size=3, stride=1, pad=1,
                                                                     weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                    bias_filler=dict(type='constant', value=0),
+                                                                    bias_term = False,
+                                                                    #bias_filler=dict(type='constant', value=0),
                                                                     engine=1,
                                                                     ),
-                                             param=[dict(lr_mult=1), dict(lr_mult=2)])
+                                             param=[dict(lr_mult=1)])
 
         top_prev = L.BatchNorm(n['rpn_conv2_' + str(idx)])
         top_prev = L.ReLU(top_prev)
@@ -146,10 +168,11 @@ def test_v1(phase,
                                          convolution_param=dict(num_output=num_upsample_filters[1],
                                                                 kernel_size=upsample_strides[1], stride=upsample_strides[1], pad=0,
                                                                 weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                bias_filler=dict(type='constant', value=0),
+                                                                bias_term = False,
+                                                                #bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
+                                         param=[dict(lr_mult=1)])
 
     deconv2 = L.BatchNorm(n['rpn_deconv2'])
     deconv2 = L.ReLU(deconv2)
@@ -161,10 +184,11 @@ def test_v1(phase,
                                          convolution_param=dict(num_output=num_filters[2],
                                                                 kernel_size=3, stride=layer_strides[2], pad=1,
                                                                 weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                bias_filler=dict(type='constant', value=0),
+                                                                bias_term = False,
+                                                                #bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
+                                         param=[dict(lr_mult=1)])
 
     top_prev = L.BatchNorm(n['init_conv3'])
     top_prev = L.ReLU(top_prev)
@@ -175,10 +199,11 @@ def test_v1(phase,
                                              convolution_param=dict(num_output=num_filters[2],
                                                                     kernel_size=3, stride=1, pad=1,
                                                                     weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                    bias_filler=dict(type='constant', value=0),
+                                                                    bias_term = False,
+                                                                    #bias_filler=dict(type='constant', value=0),
                                                                     engine=1,
                                                                     ),
-                                             param=[dict(lr_mult=1), dict(lr_mult=2)])
+                                             param=[dict(lr_mult=1)])
 
         top_prev = L.BatchNorm(n['rpn_conv3_' + str(idx)])
         top_prev = L.ReLU(top_prev)
@@ -188,10 +213,11 @@ def test_v1(phase,
                                          convolution_param=dict(num_output=num_upsample_filters[2],
                                                                 kernel_size=upsample_strides[2], stride=upsample_strides[2], pad=0,
                                                                 weight_filler=dict(type = 'xavier',std = 0.1),
-                                                                bias_filler=dict(type='constant', value=0),
+                                                                bias_term = False,
+                                                                #bias_filler=dict(type='constant', value=0),
                                                                 engine=1,
                                                                 ),
-                                         param=[dict(lr_mult=1), dict(lr_mult=2)])
+                                         param=[dict(lr_mult=1)])
 
     deconv3 = L.BatchNorm(n['rpn_deconv3'])
     deconv3 = L.ReLU(deconv3)
@@ -205,10 +231,11 @@ def test_v1(phase,
                              convolution_param=dict(num_output=num_cls,
                                                     kernel_size=1, stride=1, pad=0,
                                                     weight_filler=dict(type = 'xavier',std = 0.1),
-                                                    bias_filler=dict(type='constant', value=0),
+                                                    bias_term = True,
+                                                    # bias_filler=dict(type='constant', value=0),
                                                     engine=1,
                                                     ),
-                             param=[dict(lr_mult=1), dict(lr_mult=2)])
+                             param=[dict(lr_mult=1), dict(lr_mult=1)])
 
 
     n['cls_preds'] = L.Python(n['cls_preds'],
@@ -224,7 +251,8 @@ def test_v1(phase,
                               convolution_param=dict(num_output=num_anchor_per_loc * box_code_size,
                                                      kernel_size=1, stride=1, pad=0,
                                                      weight_filler=dict(type = 'xavier',std = 0.1),
-                                                     bias_filler=dict(type='constant', value=0),
+                                                     bias_term = True,
+                                                     #bias_filler=dict(type='constant', value=0),
                                                      engine=1,
                                                      ),
                               param=[dict(lr_mult=1), dict(lr_mult=2)])
@@ -237,6 +265,18 @@ def test_v1(phase,
                                         module='custom_layers',
                                         layer='BoxPredReshape',
                                         ))
+
+        n['iou'] = L.Python(n['box_preds'],
+                            n['cls_preds'],
+                            n.anchors, n.rect,
+                            n.trv2c, n.p2, n.anchors_mask,
+                            n.img_idx, n.img_shape,
+                            name = "EvalLayer",
+                            python_param=dict(
+                            module='custom_layers',
+                            layer='EvalLayer',
+                            param_str=repr(dataset_params_eval),
+                            ))
 
         # return to_proto(n['box_preds'])
         return n.to_proto()
@@ -274,7 +314,7 @@ def test_v1(phase,
         #                                                         )
 
         n['cls_loss'] = L.FocalLoss(n['cls_preds'], n['_labels'],
-                                    loss_weight = 1, loss_param = dict(ignore_label=0),
+                                    loss_weight = 1, #loss_param = dict(ignore_label=0, normalize=True),
                                     focal_loss_param=dict(axis=1, alpha=0.25, gamma=2.0)
                                     )
 
@@ -292,6 +332,3 @@ def test_v1(phase,
 
     # if create_prototxt:
     #     net = get_prototxt(net, save_path)
-
-    # print("exit caffe_model.py")
-    # exit()
