@@ -66,15 +66,15 @@ def test_v1(phase,
         #                      param=[dict(lr_mult=1)])
 
         top_prev = L.BatchNorm(n['Mlp'])
-        top_prev = L.ReLU(top_prev)
+        top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
 
-        top_prev = L.Python(top_prev, name = "Test_Layer",
-                                        ntop = 1,
-                                        python_param=dict(
-                                                    module='custom_layers',
-                                                    layer='TestLayer')
-                                                    )
-
+        # top_prev = L.Python(top_prev, name = "Test_Layer",
+        #                                 ntop = 1,
+        #                                 python_param=dict(
+        #                                             module='custom_layers',
+        #                                             layer='TestLayer')
+        #                                             )
+    #
     top_prev = L.Pooling(top_prev, pooling_param = dict(kernel_h=1, kernel_w=100, stride=1,
                                  pool = caffe.params.Pooling.MAX))
 
@@ -103,7 +103,7 @@ def test_v1(phase,
                                          param=[dict(lr_mult=1)]) #0.1
 
     top_prev = L.BatchNorm(n['init_conv1'])
-    top_prev = L.ReLU(top_prev)
+    top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
 
     for idx, _ in enumerate(range(layer_nums[0])):
         n['rpn_conv1_' + str(idx)] = L.Convolution(top_prev,
@@ -117,7 +117,7 @@ def test_v1(phase,
                                              param=[dict(lr_mult=1)]) #0.1
 
         top_prev = L.BatchNorm(n['rpn_conv1_' + str(idx)])
-        top_prev = L.ReLU(top_prev)
+        top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
 
     ################################deconv1_start##############################1
     n['rpn_deconv1'] = L.Deconvolution(top_prev,
@@ -131,7 +131,7 @@ def test_v1(phase,
                                          param=[dict(lr_mult=1)])
 
     deconv1 = L.BatchNorm(n['rpn_deconv1'])
-    deconv1 = L.ReLU(deconv1)
+    deconv1 = L.ReLU(deconv1)#, relu_param=dict(negative_slope = 0.1))
 
     #################################deconv1-end###############################1
 
@@ -147,7 +147,7 @@ def test_v1(phase,
                                          param=[dict(lr_mult=1)])
 
     top_prev = L.BatchNorm(n['init_conv2'])
-    top_prev = L.ReLU(top_prev)
+    top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
 
     for idx, _ in enumerate(range(layer_nums[1])):
         n['rpn_conv2_' + str(idx)] = L.Convolution(top_prev,
@@ -161,7 +161,7 @@ def test_v1(phase,
                                              param=[dict(lr_mult=1)])
 
         top_prev = L.BatchNorm(n['rpn_conv2_' + str(idx)])
-        top_prev = L.ReLU(top_prev)
+        top_prev = L.ReLU(top_prev)# , relu_param=dict(negative_slope = 0.1))
 
     ################################deconv2_start##############################2
     n['rpn_deconv2'] = L.Deconvolution(top_prev,
@@ -175,7 +175,7 @@ def test_v1(phase,
                                          param=[dict(lr_mult=1)])
 
     deconv2 = L.BatchNorm(n['rpn_deconv2'])
-    deconv2 = L.ReLU(deconv2)
+    deconv2 = L.ReLU(deconv2)# , relu_param=dict(negative_slope = 0.1))
 
     #################################deconv2-end###############################2
 
@@ -191,7 +191,7 @@ def test_v1(phase,
                                          param=[dict(lr_mult=1)])
 
     top_prev = L.BatchNorm(n['init_conv3'])
-    top_prev = L.ReLU(top_prev)
+    top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
 
     # ##
     for idx, _ in enumerate(range(layer_nums[2])):
@@ -206,7 +206,7 @@ def test_v1(phase,
                                              param=[dict(lr_mult=1)])
 
         top_prev = L.BatchNorm(n['rpn_conv3_' + str(idx)])
-        top_prev = L.ReLU(top_prev)
+        top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
 
     ################################deconv3_start##############################3
     n['rpn_deconv3'] = L.Deconvolution(top_prev,
@@ -220,7 +220,7 @@ def test_v1(phase,
                                          param=[dict(lr_mult=1)])
 
     deconv3 = L.BatchNorm(n['rpn_deconv3'])
-    deconv3 = L.ReLU(deconv3)
+    deconv3 = L.ReLU(deconv3)#, relu_param=dict(negative_slope = 0.1))
 
     # ##
     n['rpn_out'] = L.Concat(deconv1, deconv2, deconv3)
@@ -231,11 +231,11 @@ def test_v1(phase,
                              convolution_param=dict(num_output=num_cls,
                                                     kernel_size=1, stride=1, pad=0,
                                                     weight_filler=dict(type = 'xavier',std = 0.1),
-                                                    bias_term = True,
+                                                    bias_term = False,
                                                     # bias_filler=dict(type='constant', value=0),
                                                     engine=1,
                                                     ),
-                             param=[dict(lr_mult=1), dict(lr_mult=1)])
+                             param=[dict(lr_mult=1)])
 
 
     n['cls_preds'] = L.Python(n['cls_preds'],
@@ -259,12 +259,12 @@ def test_v1(phase,
 
     if phase == "eval":
 
-        n['box_preds'] = L.Python(n['box_preds'],
-                                        name = "BoxPredReshape",
-                                        python_param=dict(
-                                        module='custom_layers',
-                                        layer='BoxPredReshape',
-                                        ))
+        # n['box_preds'] = L.Python(n['box_preds'],
+        #                                 name = "BoxPredReshape",
+        #                                 python_param=dict(
+        #                                 module='custom_layers',
+        #                                 layer='BoxPredReshape',
+        #                                 ))
 
         n['iou'] = L.Python(n['box_preds'],
                             n['cls_preds'],
@@ -291,9 +291,9 @@ def test_v1(phase,
                                                         layer='RegLossCreate',
                                                         ))
 
-        n['cared'], n['reg_outside_weights'], n['reg_inside_weights'] = L.Python(n.labels,
+        n['cared'], n['reg_outside_weights'], n['reg_inside_weights'], n['cls_weights'] = L.Python(n.labels,
                                                                             name = "PrepareLossWeight",
-                                                                            ntop = 3,
+                                                                            ntop = 4,
                                                                             python_param=dict(
                                                                                         module='custom_layers',
                                                                                         layer='PrepareLossWeight'
@@ -313,10 +313,31 @@ def test_v1(phase,
         #                                                         layer='TestLayer')
         #                                                         )
 
-        n['cls_loss'] = L.FocalLoss(n['cls_preds'], n['_labels'],
-                                    loss_weight = 1, #loss_param = dict(ignore_label=0, normalize=True),
-                                    focal_loss_param=dict(axis=1, alpha=0.25, gamma=2.0)
-                                    )
+        # n['cls_loss'] = L.FocalLoss(n['cls_preds'], n['_labels'],
+        #                             loss_weight = 1, loss_param = dict(normalize=True),
+        #                             focal_loss_param=dict(axis=1, alpha=0.25, gamma=2.0)
+        #                             )
+
+        # n['cls_loss'] = L.SigmoidCrossEntropyLoss(n['cls_preds'], n['_labels'],
+        #                             loss_weight = 1, loss_param = dict(normalize=True),
+        #                             )
+        # n['cls_loss']= L.Python(n['cls_preds'], n['_labels'], n['cls_weights'],
+        #                         name = "SigmoidCrossEntropyWeightLossLayer",
+        #                         loss_weight = 1,
+        #                         python_param=dict(
+        #                                     module='custom_layers',
+        #                                     layer='SigmoidCrossEntropyWeightLossLayer'
+        #                                     ),
+        #                         param_str=str(dict(cls_weight=1)
+        #                                         ))
+        n['cls_loss']= L.Python(n['cls_preds'], n['_labels'], n['cls_weights'],
+                                name = "FocalLoss",
+                                loss_weight = 1,
+                                python_param=dict(
+                                            module='custom_layers',
+                                            layer='FocalLoss'
+                                            ),
+                                param_str=str(dict(focusing_parameter=2)))
 
         n['reg_loss'] = L.SmoothL1Loss(n['box_preds'], n['_reg_targets'],
                                         n['reg_inside_weights'], n['reg_outside_weights'],

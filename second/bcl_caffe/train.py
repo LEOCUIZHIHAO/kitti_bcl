@@ -36,7 +36,7 @@ def caf_model(exp_dir, args):
     # caffe_model.test_v1(deploy=True, dataset_params=args,)
 
     random_seed = 0
-    debug_info = False
+    debug_info = True
 
     solver = solver_function.SolverWrapper(trian_proto_path,
                                            eval_proto_path,
@@ -45,9 +45,9 @@ def caf_model(exp_dir, args):
                                            gamma= 0.1,
                                            stepsize= 27840, #learning rate decay
                                            test_iter= 50, # 10 #number of iterations to use at each testing phase 3769
-                                           test_interval= 25, # 'test every such iterations' 1856
+                                           test_interval= 50, # 'test every such iterations' 1856
                                            max_iter= 185600, # 296960 = 160*1856
-                                           snapshot=9280, # how many steps save a model
+                                           snapshot=10, # how many steps save a model
                                            solver_type='ADAM',
                                            weight_decay=0.0001,
                                            iter_size=2, #'number of mini-batches per iteration', batchsize*itersize = real_batch size

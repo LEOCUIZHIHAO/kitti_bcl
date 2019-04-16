@@ -47,14 +47,14 @@ class PFNLayer(nn.Module):
         self.norm = BatchNorm1d(self.units)
 
     def forward(self, inputs):
-        
+
         #print("inputs sum : ", inputs.sum())
         #print("inputs shape : ", inputs.shape)
         #inputs=inputs[:1,:,:]
-        print("before linear: ", inputs)
-        print("before linear shape: ", inputs.shape)
+        # print("before linear: ", inputs)
+        # print("before linear shape: ", inputs.shape)
         x = self.linear(inputs)
-        
+
         x = self.norm(x.permute(0, 2, 1).contiguous()).permute(0, 2, 1).contiguous()
         x = F.relu(x)
 
@@ -157,7 +157,7 @@ class PillarFeatureNet(nn.Module):
             features = pfn(features)
         #print(features)
         # exit()
-        
+
         return features.squeeze()
 
 
@@ -179,7 +179,7 @@ class PointPillarsScatter(nn.Module):
         self.ny = output_shape[2]
         self.nx = output_shape[3]
         self.nchannels = num_input_features
-        
+
     def forward(self, voxel_features, coords, batch_size):
 
         # batch_canvas will be the final output.

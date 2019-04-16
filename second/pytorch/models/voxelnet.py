@@ -663,7 +663,7 @@ class VoxelNet(nn.Module):
         # num_points: [num_voxels]
         # coors: [num_voxels, 4]
         #print("[debug] voxel", voxels.shape)
-        print("[debug] image -index match to cafffe ", example["image_idx"])
+        # print("[debug] image -index match to cafffe ", example["image_idx"])
         voxel_features = self.voxel_feature_extractor(voxels, num_points, coors)
         # print("[debug] voxel feature  shape", voxel_features.shape)
         # print("[debug] voxel feature ", voxel_features)
@@ -920,10 +920,10 @@ class VoxelNet(nn.Module):
                         box_preds_corners = box_torch_ops.center_to_corner_box2d(
                             boxes_for_nms[:, :2], boxes_for_nms[:, 2:4],
                             boxes_for_nms[:, 4])
-                        
+
                         boxes_for_nms = box_torch_ops.corner_to_standup_nd(
                             box_preds_corners)
-                        
+
                     # the nms in 3d detection just remove overlap boxes.
                     selected = nms_func(
                         boxes_for_nms,
