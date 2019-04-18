@@ -42,21 +42,21 @@ def caf_model(exp_dir, args):
                                            eval_proto_path,
                                            os.path.join(exp_dir, 'snapshot'),
                                            base_lr= 0.0002,
-                                           gamma= 0.1,
+                                           gamma= 0.8,
                                            stepsize= 27840, #learning rate decay
                                            test_iter= 50, # 10 #number of iterations to use at each testing phase 3769
-                                           test_interval= 25, # 'test every such iterations' 1856
+                                           test_interval= 50, # 'test every such iterations' 1856
                                            max_iter= 185600, # 296960 = 160*1856
-                                           snapshot=9280, # how many steps save a model
+                                           snapshot=9280, # how many steps save a model 9280
                                            solver_type='ADAM',
-                                           weight_decay=0.0001,
+                                           weight_decay= 0.0001, # 0.0001,
                                            iter_size=2, #'number of mini-batches per iteration', batchsize*itersize = real_batch size
                                            display = 1,
                                            debug_info=debug_info,
                                            random_seed=random_seed,
                                            save_path=os.path.join(exp_dir, 'solver.prototxt'))
 
-    # solver.train_model()
+    # solver.train_model() #for debug purpose
     solver.train_solver().solve()
 
     print("[CAFF SOLVER INIT ] ")

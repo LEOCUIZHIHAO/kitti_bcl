@@ -24,7 +24,7 @@ def get_prototxt(solver_proto, save_path=None):
 def standard_solver(train_net,
                     test_net,
                     prefix,
-                    solver_type='SGD',
+                    solver_type='ADAM',
                     weight_decay=0.001,
                     base_lr=0.01,
                     gamma=0.1,
@@ -84,7 +84,7 @@ class SolverWrapper:
                         solver_type='SGD',
                         weight_decay=0.001,
                         base_lr=0.01,
-                        gamma=0.1,
+                        gamma=0.8, #0.1 for lr_policy
                         stepsize=100,
                         test_iter=3768,
                         test_interval=1000,
@@ -106,7 +106,7 @@ class SolverWrapper:
         self.solver_param.test_initialization = False
 
         self.solver_param.base_lr = base_lr
-        self.solver_param.lr_policy = 'step'  # "fixed"
+        self.solver_param.lr_policy = 'step'  # "fixed" #exp
         self.solver_param.gamma = gamma
         self.solver_param.stepsize = stepsize
 
@@ -146,7 +146,6 @@ class SolverWrapper:
         #     self.sc_val_mAP = logger.scalar("mAP")
 
     def train_solver(self):
-        #"""执行训练的整个流程，穿插了validation"""
         return self.solver
 
 
@@ -159,8 +158,26 @@ class SolverWrapper:
         while cur_iter < self.solver_param.max_iter:
             #self.solver.step(self.test_interval)
             print("perpare to start train")
+            step=0
             for i in range(self.test_interval):
                 self.solver.step(1) #forward + backward + update weights
+                # self.solver.net.forward()
+                w = self.solver.net.params["Mlp"][0].data[...]
+                # b = self.solver.net.params["Mlp"][1].data[...]
+                print(w)
+                print(w.shape)
+
+                self.solver.test_nets[0].share_with(self.solver.net)
+
+                # t_w = self.solver.test_nets[0].params["Mlp"][0].data[...]
+                t_w = self.solver.test_nets[0].params["Mlp"][0].data[...]
+                print("------test-------")
+                print(t_w)
+                print(t_w == w)
+                # print(b.shape)
+                step+=1
+                if step == 1:
+                    exit()
                 # reg_loss = self.solver.net.blobs['reg_loss'].data
                 # cls_loss = self.solver.net.blobs['cls_loss'].data
 
@@ -168,15 +185,12 @@ class SolverWrapper:
                 # self.sc_train_loss.add_record(step, loss)
                 # self.sc_train_acc.add_record(step, acc) # for logger
 
-            self.eval_on_val()
-            print("Eval Done ~~~~~~~~~~~~~~!!!!")
             cur_iter += self.test_interval
 
     def eval_on_val(self):
         #"""在整个验证集上执行inference和evaluation"""
         self.solver.test_nets[0].share_with(self.solver.net)
         self.cur_epoch += 1
-        print("Start Eval ~~~~~~~~~~~~~~!!!!")
         for t in range(self.solver_param.test_iter[0]):
 
             self.solver.test_nets[0].forward()

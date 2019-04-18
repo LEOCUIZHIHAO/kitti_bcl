@@ -62,17 +62,20 @@ def second_box_decode(box_encodings, anchors, encode_angle_to_vector=False, smoo
     # print(anchors.shape) #([1, 107136, 7])
     # print(anchors)
     xa, ya, za, wa, la, ha, ra = np.split(anchors, 7,  axis=-1)
-    # print(xa)
-    # print(xa.shape) #([1, 107136, 1])
 
     if encode_angle_to_vector:
         xt, yt, zt, wt, lt, ht, rtx, rty = np.split(
             box_encodings, 1, dim=-1)
 
     else:
+        #print(box_encodings[:,0,:])
         xt, yt, zt, wt, lt, ht, rt = np.split(box_encodings, 7, axis=-1)
+        # xt, yt, zt, wt, lt, ht, rt = np.split(box_encodings, 1, axis=-1) #wrong
+        #print(xt)
+        #print(yt) #([1, 107136, 1])
+        #print(rt)
 
-    # xt, yt, zt, wt, lt, ht, rt = torch.split(box_encodings, 1, dim=-1)
+
     za = za + ha / 2
     diagonal = np.sqrt(la**2 + wa**2)
     xg = xt * diagonal + xa
@@ -300,7 +303,7 @@ def corner_to_standup_nd(boxes_corner):
         standup_boxes.append(np.amin(boxes_corner[:, :, i], axis=1))
     for i in range(ndim):
         standup_boxes.append(np.amax(boxes_corner[:, :, i], axis=1))
-    return np.stack(standup_boxes, axis=1) ## TODO: double check
+    return np.stack(standup_boxes, axis=1)
 
 def corner_to_standup_nd_torch(boxes_corner):
     ndim = boxes_corner.shape[2]
@@ -533,10 +536,15 @@ def camera_to_lidar(points, r_rect, velo2cam):
 
 
 def lidar_to_camera(points, r_rect, velo2cam):
+
     num_points = points.shape[0]
-    points = np.concatenate(
-        [points, np.ones(shape = (num_points, 1))], axis=-1)
-    camera_points = points @  np.transpose((r_rect @ velo2cam))
+    points = np.concatenate([points, np.ones(shape=(num_points, 1))], axis=-1)
+    camera_points = points @  (r_rect @ velo2cam).T
+
+    # points = np.hstack([points, np.ones((num_points, 1))]).T
+    # points = np.matmul(velo2cam, points)
+    # points = np.matmul(r_rect, points).T
+
     return camera_points[..., :3]
 
 def lidar_to_camera_torch(points, r_rect, velo2cam):
@@ -622,16 +630,17 @@ def multiclass_nms(nms_func,
 
 def nms(bboxes,
         scores,
-        pre_max_size=None,
-        post_max_size=None,
+        pre_max_size=None, #1000
+        post_max_size=None, #300
         iou_threshold=0.5):
     if pre_max_size is not None:
         num_keeped_scores = scores.shape[0]
         pre_max_size = min(num_keeped_scores, pre_max_size)
-        indices = np.argsort(scores)[:pre_max_size]
+        indices = np.argsort(scores)[::-1][:pre_max_size] #top pre_max_size anchors boxes
         scores = scores[indices]
         bboxes = bboxes[indices] ## TODO: double check
     dets = np.concatenate([bboxes, np.expand_dims(scores, axis=-1)], axis=1)
+
     # dets_np = dets.data.cpu().numpy()
     if len(dets) == 0:
         keep = np.array([], dtype=np.int64)
