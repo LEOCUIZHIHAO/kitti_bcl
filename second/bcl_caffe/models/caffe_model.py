@@ -4,34 +4,46 @@ from caffe import layers as L, params as P, to_proto
 from bcl_caffe.utils import get_prototxt, parse_channel_scale, map_channel_scale
 import gc
 
-def conv_bn_relu(bottom, ks, nout, stride=1, pad=0):
-    conv = L.Convolution(bottom,
-                        convolution_param=dict(
-                                kernel_size=ks, stride=stride,
-                                num_output=nout, pad=pad,
-                                engine=2,
-                                weight_filler=dict(type = 'xavier'),
-                                bias_term = False),
-                                param=[dict(lr_mult=1)],
-                                )
-    bn = L.BatchNorm(conv, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
-    sc = L.Scale(bn, scale_param=dict(bias_term=True))
+def conv_bn_relu(n, name, top_prev, ks, nout, stride=1, pad=0, loop=1):
 
-    return L.ReLU(sc)
+    for idx in range(loop):
+        n[str(name)+"_"+str(idx)] = L.Convolution(top_prev, #name = name,
+                                            convolution_param=dict(
+                                                    kernel_size=ks, stride=stride,
+                                                    num_output=nout, pad=pad,
+                                                    engine=2,
+                                                    weight_filler=dict(type = 'xavier'),
+                                                    bias_term = False),
+                                                    param=[dict(lr_mult=1)],
+                                                    )
+        top_prev = n[str(name)+"_"+str(idx)]
+        n[str(name)+'_bn_'+str(idx)] = L.BatchNorm(top_prev, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
+        top_prev = n[str(name)+'_bn_'+str(idx)]
+        n[str(name)+'_sc_'+str(idx)] = L.Scale(top_prev, scale_param=dict(bias_term=True))
+        top_prev = n[str(name)+'_sc_'+str(idx)]
+        n[str(name)+'_relu_'+str(idx)] = L.ReLU(top_prev, in_place=True)
+        top_prev = n[str(name)+'_relu_'+str(idx)]
 
-def deconv_bn_relu(bottom, ks, nout, stride=1, pad=0):
-    deconv = L.Deconvolution(bottom,
-                            convolution_param=dict(kernel_size=ks, stride=stride,
-                                num_output=nout, pad=pad,
-                                engine=2,
-                                weight_filler=dict(type = 'xavier'),
-                                bias_term = False),
-                                param=[dict(lr_mult=1)],
-                                )
-    bn = L.BatchNorm(deconv, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
-    sc = L.Scale(bn, scale_param=dict(bias_term=True))
+    return top_prev
 
-    return L.ReLU(sc)
+def deconv_bn_relu(n, name, top_prev, ks, nout, stride=1, pad=0):
+    n[str(name)] = L.Deconvolution(top_prev, # name = name,
+                                            convolution_param=dict(kernel_size=ks, stride=stride,
+                                                num_output=nout, pad=pad,
+                                                engine=2,
+                                                weight_filler=dict(type = 'xavier'),
+                                                bias_term = False),
+                                                param=[dict(lr_mult=1)],
+                                                )
+    top_prev = n[str(name)]
+    n[str(name)+'_bn'] = L.BatchNorm(top_prev, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
+    top_prev = n[str(name)+'_bn']
+    n[str(name)+'_sc'] = L.Scale(top_prev, scale_param=dict(bias_term=True))
+    top_prev = n[str(name)+'_sc']
+    n[str(name)+'_relu'] = L.ReLU(top_prev, in_place=True)
+    top_prev = n[str(name)+'_relu']
+
+    return top_prev
 
 def test_v1(phase,
             dataset_params=None,
@@ -68,29 +80,12 @@ def test_v1(phase,
         # n.coors = L.Input(shape=dict(dim=[1, len(input_dims), 1, sample_size]))
         # n.reg_targets = L.Input(shape=dict(dim=[1, len(input_dims), 1, sample_size]))
 
-    # top_prev = n.data
 
-    top_prev = conv_bn_relu(n.data, 1, 64, stride=1, pad=0)
+    top_prev = conv_bn_relu(n, "mlp", n.data, 1, 64, stride=1, pad=0, loop=1)
 
-    # n['Mlp'] = L.Convolution(top_prev,
-    #                      convolution_param=dict(num_output=64,
-    #                                             kernel_size=1, stride=1, pad=0,
-    #                                             weight_filler=dict(type = 'xavier'),
-    #                                             bias_term = False,
-    #                                             engine=2,
-    #                                             ),
-    #                      param=[dict(lr_mult=1, decay_mult=1)])
-    # idx = 1
-    # top_prev = n['Mlp']
-    # n['bn'+str(idx)] = L.BatchNorm(top_prev, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
-    # top_prev = n['bn'+str(idx)]
-    # n['sc'+str(idx)] = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    # top_prev = n['sc'+str(idx)]
-    # n['relu'+str(idx)] = L.ReLU(top_prev) #in_place=True
-    # top_prev = n['relu'+str(idx)]
 
     n['max_pool'] = L.Pooling(top_prev, pooling_param = dict(kernel_h=1, kernel_w=100, stride=1, pad=0,
-                                 pool = caffe.params.Pooling.MAX)) #(1,64,voxel,1)
+                                        pool = caffe.params.Pooling.MAX)) #(1,64,voxel,1)
 
     top_prev = n['max_pool']
 
@@ -108,66 +103,11 @@ def test_v1(phase,
     num_upsample_filters = [128, 128, 128]
     upsample_strides = [1, 2, 4]
 
+    top_prev = conv_bn_relu(n, "ini_conv1", top_prev, 3, num_filters[0], stride=layer_strides[0], pad=1, loop=1)
 
-    ##############################init-1 cov w/2, h/2#############################
-    n['init_conv1'] = L.Convolution(top_prev,
-                                     convolution_param=dict(num_output=num_filters[0],
-                                                            kernel_size=3, stride=layer_strides[0], pad=1,
-                                                            weight_filler=dict(type = 'xavier'),
-                                                            bias_term = False,
-                                                            engine=2,
-                                                            ),
-                                     param=[dict(lr_mult=1)])
-    idx = 2
-    top_prev = n['init_conv1']
-    n['bn'+str(idx)] = L.BatchNorm(top_prev, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
-    top_prev = n['bn'+str(idx)]
-    n['sc'+str(idx)] = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    top_prev = n['sc'+str(idx)]
-    n['relu'+str(idx)] = L.ReLU(top_prev)
-    top_prev = n['relu'+str(idx)]
+    top_prev = conv_bn_relu(n, "rpn_conv1", top_prev, 3, num_filters[0], stride=1, pad=1, loop=1)
 
-    #ini_conv1 = conv_bn_relu(top_prev, 3, num_filters[0], stride=layer_strides[0], pad=1)
-
-    #for idx, _ in enumerate(range(layer_nums[0])):
-    idx = 3
-    n['rpn_conv1_' + str(idx)] = L.Convolution(top_prev,
-                                         convolution_param=dict(num_output=num_filters[0],
-                                                                kernel_size=3, stride=1, pad=1,
-                                                                weight_filler=dict(type = 'xavier'),
-                                                                bias_term = False,
-                                                                engine=2,
-                                                                ),
-                                         param=[dict(lr_mult=1)])
-    top_prev = n['rpn_conv1_' + str(idx)]
-    n['bn'+str(idx)] = L.BatchNorm(top_prev, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
-    top_prev = n['bn'+str(idx)]
-    n['sc'+str(idx)] = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    top_prev = n['sc'+str(idx)]
-    n['relu'+str(idx)] = L.ReLU(top_prev)
-    top_prev = n['relu'+str(idx)]
-
-    # conv1 = conv_bn_relu(ini_conv1, 3, num_filters[0], stride=1, pad=1)
-
-    ################################deconv1_start##############################1
-    idx = 4
-    n['rpn_deconv1'] = L.Deconvolution(top_prev,
-                                         convolution_param=dict(num_output=num_upsample_filters[0],
-                                                                kernel_size=upsample_strides[0], stride=upsample_strides[0], pad=0,
-                                                                weight_filler=dict(type = 'xavier'),
-                                                                bias_term = False,
-                                                                engine=2,
-                                                                ),
-                                         param=[dict(lr_mult=1)])
-    top_prev = n['rpn_deconv1']
-    n['bn'+str(idx)] = L.BatchNorm(top_prev, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
-    top_prev = n['bn'+str(idx)]
-    n['sc'+str(idx)] = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    top_prev = n['sc'+str(idx)]
-    n['relu'+str(idx)] = L.ReLU(top_prev)
-    top_prev = n['relu'+str(idx)]
-
-    #deconv1 = deconv_bn_relu(conv1, upsample_strides[0], num_upsample_filters[0], stride=upsample_strides[0], pad=0)
+    top_prev = deconv_bn_relu(n, "rpn_deconv1", top_prev, upsample_strides[0], num_upsample_filters[0], stride=upsample_strides[0], pad=0)
 
     #################################deconv1-end###############################1
 
@@ -345,7 +285,7 @@ def test_v1(phase,
 
         n.reg_loss= L.Python(box_preds_reshape, n.reg_targets, reg_outside_weights,
                                 name = "WeightedSmoothL1Loss",
-                                loss_weight = 2,
+                                loss_weight = 1,
                                 python_param=dict(
                                             module='custom_layers',
                                             layer='WeightedSmoothL1Loss'

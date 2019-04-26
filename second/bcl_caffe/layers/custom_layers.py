@@ -575,7 +575,7 @@ class WeightedSmoothL1Loss(caffe.Layer):
 
         reg_loss = loss * self.reg_weights
 
-        top[0].data[...] = np.sum(reg_loss)
+        top[0].data[...] = np.sum(reg_loss) * 2
 
     def backward(self, top, propagate_down, bottom):
 
@@ -592,7 +592,7 @@ class WeightedSmoothL1Loss(caffe.Layer):
 
             delta = np.where(self.cond, (self.sigma**2) * self.diff, self.diff/self.abs_diff)
 
-        bottom[0].diff[...] = delta * self.reg_weights
+        bottom[0].diff[...] = delta * self.reg_weights * 2
 
 class EvalLayer(caffe.Layer):
 
