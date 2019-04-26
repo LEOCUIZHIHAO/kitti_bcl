@@ -68,7 +68,7 @@ class InputKittiData(caffe.Layer):
             self.example_batch.append(example)
 
         example = self.merge_second_batch(self.example_batch)
-
+        # example = np.load("./pillar_data.npy").item() ## DEBUG:
         ########################################################################
 
         self.example_batch = [] #reset example_batch
@@ -84,10 +84,9 @@ class InputKittiData(caffe.Layer):
         top[1].reshape(*coors.shape) #[7000,4]
 
         if self.phase == 'train':
-
             labels = example['labels']
             reg_targets =example['reg_targets']
-            top[2].reshape(*labels.shape) #[2 107136]
+            top[2].reshape(*labels.shape) #[1 107136]
             top[3].reshape(*reg_targets.shape) #[]
 
         elif self.phase == 'eval':
@@ -110,9 +109,6 @@ class InputKittiData(caffe.Layer):
             top[7].reshape(*batch_imgidx.shape)
             top[8].reshape(*batch_image_shape.shape)
 
-        del example
-        gc.collect()
-
     def reshape(self, bottom, top):
         pass
 
@@ -133,6 +129,7 @@ class InputKittiData(caffe.Layer):
             self.example_batch.append(example)
 
         example = self.merge_second_batch(self.example_batch)
+        # example = np.load("./pillar_data.npy").item() ## DEBUG:
 
         self.example_batch = [] #reset example_batch
         voxels = example['voxels']
@@ -140,23 +137,6 @@ class InputKittiData(caffe.Layer):
         num_points = example['num_points']
 
         features = self.PillarFeatureNet(voxels, coors, num_points)
-
-        """
-        14/4/2019
-
-        for i in range(1):
-            print("---------------> pillar num before mlp #: ", i)
-            #print("each pillar points ", in1[:,:, i, :])
-            # print("each pillar points shape", in1[:,:, i, :].shape)
-            # print("each pillar points sum ", in1[:,:, i, :].sum())
-            # print("each pillar points mean ", in1[:,:, i, :].mean())
-            for j in range(features.shape[3]):
-                if np.sum(features[:,:, i, j]) != 0:
-                    print("point index --> ", j)
-                    print(features[:,:, i, j])
-                    print("point sum", np.sum(features[:,:, i, j]))
-                    print("point mean", np.mean(features[:,:, i, j]))
-        """
 
         top[0].reshape(*features.shape) #[1,9,7000,100]
         top[1].reshape(*coors.shape) #[7000,4]
@@ -166,7 +146,7 @@ class InputKittiData(caffe.Layer):
         if self.phase == 'train':
             labels = example['labels']
             reg_targets =example['reg_targets']
-            top[2].reshape(*labels.shape) #[2 107136]
+            top[2].reshape(*labels.shape) #[1 107136]
             top[3].reshape(*reg_targets.shape) #[]
             top[2].data[...] = labels
             top[3].data[...] = reg_targets
@@ -203,9 +183,6 @@ class InputKittiData(caffe.Layer):
             top[7].data[...] = batch_imgidx
             top[8].data[...] = batch_image_shape
 
-        del example
-        gc.collect()
-
     def backward(self, top, propagate_down, bottom):
         pass
 
@@ -238,10 +215,6 @@ class InputKittiData(caffe.Layer):
         target_assigner_cfg = model_cfg.target_assigner
         target_assigner = target_assigner_builder.build(target_assigner_cfg,
                                                         bv_range, box_coder)
-        def _worker_init_fn(worker_id):
-            time_seed = np.array(time.time(), dtype=np.int32)
-            np.random.seed(time_seed + worker_id)
-            print(f"WORKER {worker_id} seed:", np.random.get_state()[1][0])
 
         if self.phase == 'train':
             dataset = input_reader_builder.build(
@@ -285,17 +258,11 @@ class InputKittiData(caffe.Layer):
         points_per_voxels = features.shape[1]
         mask = get_paddings_indicator_caffe(num_points, points_per_voxels, axis=0)
         mask = np.expand_dims(mask, axis=-1)
-        # print("mask", mask)
         features *= mask
-        # print("[debug] features.shape: ", features.shape)
-        voxel_num = voxels.shape[0]
-        max_points_in_voxels = voxels.shape[1]
-        # features = features.reshape(1, -1, voxel_num, max_points_in_voxels)
+
         #(voxel, npoint, channel) -> (channel, voxels, npoints)
-        # features = np.expand_dims(features.transpose(2,0,1), axis = 0)
-        features = np.expand_dims(features, axis = 0)
+        features = np.expand_dims(features, axis=0)
         features = features.transpose(0,3,1,2)
-        # print("[debug] features.shape: ", features.shape)
 
         return features
 
@@ -333,16 +300,14 @@ class PointPillarsScatter(caffe.Layer):
 
         param = eval(self.param_str)
         output_shape = param['output_shape']
-        num_input_features = param['num_input_features']
 
         self.ny = output_shape[2]
         self.nx = output_shape[3]
-        self.nchannels = num_input_features
-        self.batch_size = 1 # TODO: pass batch to here
+        self.nchannels = output_shape[4]
+        self.batch_size = 1
 
         voxel_features = bottom[0].data
         voxel_features = np.squeeze(voxel_features) #(1, 64, voxel, 1) -> (64,Voxel)
-        voxel_features = voxel_features.transpose() #(64,voxel) -> (voxel, 64)
         coords = bottom[1].data
 
         batch_canvas = []
@@ -355,8 +320,7 @@ class PointPillarsScatter(caffe.Layer):
             this_coords = coords[batch_mask, :]
             indices = this_coords[:, 2] * self.nx + this_coords[:, 3]
             indices = indices.astype(int)
-            voxels = voxel_features[batch_mask, :]
-            voxels = np.transpose(voxels)
+            voxels = voxel_features[:, batch_mask]
 
             # Now scatter the blob back to the canvas.
             canvas[:, indices] = voxels
@@ -378,8 +342,7 @@ class PointPillarsScatter(caffe.Layer):
     def forward(self, bottom, top):
 
         voxel_features = bottom[0].data #(1,64,-1,1)
-        voxel_features = np.squeeze(voxel_features) #(1, 64, voxel, 1) -> (64,Voxel)
-        voxel_features = voxel_features.transpose() #(64,voxel) -> (voxel, 64)
+        voxel_features = np.squeeze(voxel_features) #(1, 64, -1, 1) -> (64,-1)
         coords = bottom[1].data
 
         batch_canvas = []
@@ -392,8 +355,7 @@ class PointPillarsScatter(caffe.Layer):
             this_coords = coords[batch_mask, :]
             self.indices = this_coords[:, 2] * self.nx + this_coords[:, 3]
             self.indices = self.indices.astype(int)
-            voxels = voxel_features[batch_mask, :]
-            voxels = np.transpose(voxels) #(-1,64) -> (64,-1)
+            voxels = voxel_features[:, batch_mask]
 
             # Now scatter the blob back to the canvas.
             canvas[:, self.indices] = voxels
@@ -410,20 +372,17 @@ class PointPillarsScatter(caffe.Layer):
 
     def backward(self, top, propagate_down, bottom):
         diff = top[0].diff.reshape(self.batch_size, self.nchannels, self.nx * self.ny)[:,:,self.indices]
-        diff = np.expand_dims(diff, axis=-1)
-        bottom[0].diff[...] = diff
+        bottom[0].diff[...] = np.expand_dims(diff, axis=-1)
 
 class PrepareLossWeight(caffe.Layer):
     def setup(self, bottom, top):
 
         labels = bottom[0].data
         cls_weights, reg_weights, cared = self.prepare_loss_weights(labels)
-        reg_inside_weights = np.ones(reg_weights.shape, dtype=int)
-        #print("[debug] reg_weights.shape: ", reg_weights.shape)
-        #top[0].reshape(*cared.shape)
-        top[0].reshape(*reg_weights.shape) #reg_outside_weights
-        top[1].reshape(*reg_inside_weights.shape)
-        #top[2].reshape(*cls_weights.shape)
+
+        top[0].reshape(*cared.shape)
+        top[1].reshape(*reg_weights.shape) #reg_outside_weights
+        top[2].reshape(*cls_weights.shape)
 
     def reshape(self, bottom, top):
         pass
@@ -432,13 +391,10 @@ class PrepareLossWeight(caffe.Layer):
 
         labels = bottom[0].data
         cls_weights, reg_weights, cared = self.prepare_loss_weights(labels)
-        reg_inside_weights = np.ones(reg_weights.shape, dtype=int)
 
-        # reg_inside_weights = np.ones(reg_weights.shape)# * reg_weights
-        #top[0].data[...] = cared
-        top[0].data[...] = reg_weights #reg_outside_weights
-        top[1].data[...] = reg_inside_weights
-        #top[2].data[...] = cls_weights
+        top[0].data[...] = cared
+        top[1].data[...] = reg_weights #reg_outside_weights
+        top[2].data[...] = cls_weights
 
     def prepare_loss_weights(self,
                             labels,
@@ -464,19 +420,14 @@ class PrepareLossWeight(caffe.Layer):
             cls_weights /= num_examples
             bbox_normalizer = np.sum(positives, 1, keepdims=True).astype(dtype)
             reg_weights /= np.clip(bbox_normalizer, a_min=1.0, a_max=None)
-        elif loss_norm_type == LossNormType.NormByNumPositives:  # for focal loss # TODO: double check
+        elif loss_norm_type == LossNormType.NormByNumPositives:  # for focal loss
             pos_normalizer = np.sum(positives, 1, keepdims=True).astype(dtype)
-            reg_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None)
-            #cls_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None)
-            #print("cls_weights", np.unique(cls_weights))
+            reg_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None) #(1, 107136)
+            cls_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None) #(1, 107136)
 
-            #make shape as (1,anchors,7)
-            # reg_weights = np.expand_dims(reg_weights, axis=-1)
-            # reg_weights = np.repeat(reg_weights, 7, axis=-1)
-
-            #make shape as (1,7, anchors)
-            reg_weights = np.repeat(reg_weights, 7, axis=0)
-            reg_weights = np.expand_dims(reg_weights, axis=0)
+            # make shape as (1,7, anchors)
+            # reg_weights = np.repeat(reg_weights, 7, axis=0)
+            # reg_weights = np.expand_dims(reg_weights, axis=0)
 
         elif loss_norm_type == LossNormType.NormByNumPosNeg:
             pos_neg = np.stack([positives, negatives], a_min=-1).astype(dtype)
@@ -500,20 +451,15 @@ class LabelEncode(caffe.Layer):
     def setup(self, bottom, top):
 
         labels = bottom[0].data
-        #cared = bottom[1].data
+        cared = bottom[1].data
 
-        # cls_targets = labels * cared # (1, 107136)
-        # cls_targets = cls_targets.astype(int)
+        cls_targets = labels * cared # (1, 107136)
+        cls_targets = cls_targets.astype(int)
 
-        labels = np.expand_dims(labels, -1)
-        cls_targets = labels.astype(int)
-        one_hot_targets = np.transpose(cls_targets, (0,2,1)) #(B,-1,C), -> (B, C,-1)
+        self.num_class = 1
 
-        # self.num_class = 1
-
-        # one_hot_targets = np.eye(self.num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
-        # one_hot_targets = one_hot_targets[..., 1:]
-        # one_hot_targets = np.transpose(one_hot_targets, (0,2,1)) #(B,-1,C), -> (B, C,-1)
+        one_hot_targets = np.eye(self.num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
+        one_hot_targets = one_hot_targets[..., 1:]
 
         top[0].reshape(*one_hot_targets.shape) #reshape to caffe pattern
 
@@ -522,173 +468,31 @@ class LabelEncode(caffe.Layer):
 
     def forward(self, bottom, top):
 
-        labels = bottom[0].data
-        # cared = bottom[1].data
+        labels = bottom[0].data # (1, 107136)
+        cared = bottom[1].data
 
-        # cls_targets = labels * cared
-        # cls_targets = cls_targets.astype(int)
+        cls_targets = labels * cared
+        cls_targets = cls_targets.astype(int)
 
-        labels = np.expand_dims(labels, -1)
-        cls_targets = labels.astype(int)
-        one_hot_targets = np.transpose(cls_targets, (0,2,1)) #(B,-1,C), -> (B, C,-1)
 
-        # one_hot_targets = np.eye(self.num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
-        # one_hot_targets = one_hot_targets[..., 1:]
-        # one_hot_targets = np.transpose(one_hot_targets, (0,2,1)) #(B,-1,C), -> (B, C,-1)
+        one_hot_targets = np.eye(self.num_class+1)[cls_targets]   #One_hot label -- make sure one hot class is <num_class+1>
+        one_hot_targets = one_hot_targets[..., 1:]
 
         top[0].data[...] = one_hot_targets
 
     def backward(self, top, propagate_down, bottom):
         pass
 
-class PredReshape(caffe.Layer):
-    def setup(self, bottom, top):
-        cls_preds = bottom[0].data
-        # cls_weights = bottom[1].data
-        # cls_weights = np.expand_dims(cls_weights, axis=0)
-
-        self.batch_size = int(cls_preds.shape[0])
-        self.num_class = 1
-
-        cls_preds = cls_preds.reshape(self.batch_size, self.num_class, -1) #(B,C,H,W)-> (B,C,-1)
-        # cls_preds = cls_preds * cls_weights
-
-        top[0].reshape(*cls_preds.shape)
-
-    def reshape(self, bottom, top):
-        pass
-
-    def forward(self, bottom, top):
-
-        cls_preds = bottom[0].data
-        # cls_weights = bottom[1].data
-        # cls_weights = np.expand_dims(cls_weights, axis=0)
-
-        cls_preds = cls_preds.reshape(self.batch_size, self.num_class, -1) #(B,C,H,W)-> (B,C,-1)
-        # cls_preds = cls_preds * cls_weights
-
-        top[0].data[...] = cls_preds
-
-    def backward(self, top, propagate_down, bottom):
-        # cls_weights = bottom[1].data
-        # cls_weights = np.expand_dims(cls_weights, axis=0)
-        # bottom[0].diff[...] = (top[0].diff* cls_weights).reshape(bottom[0].data.shape)
-
-        bottom[0].diff[...] = top[0].diff.reshape(bottom[0].data.shape)
-
-class RegLossCreate(caffe.Layer):
-    def setup(self, bottom, top):
-
-        box_preds = bottom[0].data
-        reg_targets = bottom[1].data
-        self.batch, self.channel, self.h, self.w = bottom[0].data.shape
-
-        self.box_code_size = 7
-        self.batch_size = int(box_preds.shape[0])
-
-        box_preds = box_preds.transpose(0,2,3,1) #(B,C,H,W) -> (B,H,W,C)
-        box_preds = box_preds.reshape(self.batch_size, -1, self.box_code_size) #(B,H,W,C)->(B,-1,C)
-
-        # sin(a - b) = sinacosb-cosasinb
-        box_preds, reg_targets = self.add_sin_difference(box_preds, reg_targets) #(B,-1,C)
-
-        box_preds = box_preds.transpose(0,2,1) #(B,-1,C) -> (B,C,-1)
-        reg_targets = reg_targets.transpose(0,2,1) #(B,-1,C) -> (B,C,-1)
-
-        top[0].reshape(*box_preds.shape)
-        top[1].reshape(*reg_targets.shape)
-
-    def reshape(self, bottom, top):
-        pass
-
-    def forward(self, bottom, top):
-
-        box_preds = bottom[0].data
-        reg_targets = bottom[1].data
-
-        box_preds = box_preds.transpose(0,2,3,1) #(B,C,H,W) -> (B,H,W,C)
-        box_preds = box_preds.reshape(self.batch_size, -1, self.box_code_size)
-
-        # sin(a - b) = sinacosb-cosasinb
-        box_preds, reg_targets = self.add_sin_difference(box_preds, reg_targets)
-
-        box_preds = box_preds.transpose(0,2,1)  #(B,-1,C) -> (B,C,-1)
-        reg_targets = reg_targets.transpose(0,2,1) #(B,-1,C) -> (B,C,-1)
-
-        top[0].data[...] = box_preds
-        top[1].data[...] = reg_targets
-
-    def add_sin_difference(self, boxes1, boxes2):
-        rad_pred_encoding = np.sin(boxes1[..., -1:]) * np.cos(boxes2[..., -1:])
-        rad_tg_encoding = np.cos(boxes1[..., -1:]) * np.sin(boxes2[..., -1:])
-        boxes1 = np.concatenate([boxes1[..., :-1], rad_pred_encoding], axis=-1)
-        boxes2 = np.concatenate([boxes2[..., :-1], rad_tg_encoding], axis=-1)
-        return boxes1, boxes2
-
-    def backward(self, top, propagate_down, bottom):
-        # (B,C,-1) ->(B,-1,C)->(B,H,W,C)->(B,C,H,W)
-        bottom[0].diff[...] = top[0].diff.transpose(0,2,1).reshape(self.batch, self.h, self.w, self.channel).transpose(0,3,1,2)
-
-class SigmoidCrossEntropyWeightLossLayer(caffe.Layer):
-
-    def setup(self, bottom, top):
-        # check for all inputs
-        params = eval(self.param_str)
-        self.cls_weight = float(params["cls_weight"])
-        # if len(bottom) != 2:
-        #     raise Exception("Need two inputs (scores and labels) to compute sigmoid crossentropy loss.")
-
-    def reshape(self, bottom, top):
-        # check input dimensions match between the scores and labels
-        if bottom[0].count != bottom[1].count:
-            raise Exception("Inputs must have the same dimension.")
-        # difference would be the same shape as any input
-        self.diff = np.zeros_like(bottom[0].data, dtype=np.float32)
-        # layer output would be an averaged scalar loss
-        top[0].reshape(1)
-
-    def forward(self, bottom, top):
-        score=bottom[0].data
-        label=bottom[1].data
-        cls_weights=bottom[2].data
-
-        first_term = (label-1)*score
-        second_term = ((1-self.cls_weight)*label - 1)*np.log(1+np.exp(-score))
-
-        # print("debug cls", cls_weights.shape)
-        # print("debug score", score.shape)
-        # top[0].data[...] = np.sum(first_term + second_term)/label.shape[2]
-        cls_weight = np.expand_dims(cls_weights, axis = 0)
-        # print(cls_weight)
-        # print(np.unique(cls_weight, return_counts = True))
-        top[0].data[...] = -np.sum((first_term + second_term)*cls_weights)
-
-        sig = -1.0/(1.0+np.exp(-score))
-        self.diff = ((self.cls_weight-1)*label+1)*sig + self.cls_weight*label
-        if np.isnan(top[0].data):
-                exit()
-
-    def backward(self, top, propagate_down, bottom):
-        bottom[0].diff[...]=self.diff
-
-class FocalLoss(caffe.Layer):
+class WeightFocalLoss(caffe.Layer):
 
     def setup(self, bottom, top):
         # check input pair
         # if len(bottom) != 2:
         #     raise Exception("Need two inputs to compute distance (inference and labels).")
 
-        # Get Focusing Parameter
-        # Adjusts the rate at which easy samples are down-weighted. WHen is 0, Focal Loss is equivalent to Cross-Entorpy.
-        # Range is [0-5] 2 Leads to optimum performance in original paper
         params = eval(self.param_str)
-        self.focusing_parameter = int(params['focusing_parameter'])
-        print("Focusing Paramerer: " + str(self.focusing_parameter))
-        #
-        # print("Reading class balances")
-        # with open('../dataset_analysis/label_distribution.json', 'r') as f:
-        #     self.class_balances = json.load(f)
-        # print("WARNING: BALANCING CLASSES")
+        self.gamma = int(params['focusing_parameter'])
+        self.alpha = params['alpha']
 
     def reshape(self, bottom, top):
         # check input dimensions match
@@ -697,67 +501,98 @@ class FocalLoss(caffe.Layer):
         top[0].reshape(1)
 
     def forward(self, bottom, top):
-        scores = bottom[0].data
-        labels = bottom[1].data
-        cls_weights = bottom[2].data
-        # Compute sigmoid activations
-        scores =  1 / (1 + np.exp(-scores))
-        logprobs = np.zeros([scores.shape[2], 1])
-        print("[debug] scores.shape[2]: ", scores.shape[2])
-        # # Compute cross-entropy loss
-        # for r in range(bottom[0].num):  # For each element in the batch
-        #     for c in range(len(labels[r, :])):  # For each class we compute the cross-entropy loss
-        #         # We sum the loss per class for each element of the batch
-        #         if labels[r, c] == 0: # Loss form for negative classes
-        #             logprobs[r] += self.class_balances[str(c+1)] * -np.log(1-scores[r, c]) * scores[r, c] ** self.focusing_parameter
-        #         else: # Loss form for positive classes
-        #             logprobs[r] += self.class_balances[str(c+1)] * -np.log(scores[r, c]) * (1 - scores[r, c]) ** self.focusing_parameter
-        #             # The class balancing factor can be included in labels by using scaled real values instead of binary labels.
-        #
-        # data_loss = np.sum(logprobs) / bottom[0].num
+        self._p = bottom[0].data
+        self.label = bottom[1].data
+        self.cls_weights = bottom[2].data
+        self.cls_weights = np.expand_dims(self.cls_weights,-1)
 
-        for r in range(scores.shape[2]):  # For each element in the batch
-            if labels[:, :, r] == 0: # Loss form for negative classes
-                logprobs[r] = -0.25*np.log(1-scores[:, :, r]) * scores[:, :, r] ** self.focusing_parameter
-            else: # Loss form for positive classes
-                logprobs[r] = -0.25*np.log(scores[:, :, r]) * (1 - scores[:, :, r]) ** self.focusing_parameter
-                # The class balancing factor can be included in labels by using scaled real values instead of binary labels.
-        cls_weights = np.transpose(cls_weights)
-        data_loss = np.sum(logprobs*cls_weights)# / bottom[0].num
+        self._p_t =  1 / (1 + np.exp(-self._p)) # Compute sigmoid activations
+
+        self.first = (1-self.label) * (1-self.alpha) + self.label * self.alpha
+
+        self.second = (1-self.label) * ((self._p_t) ** self.gamma) + self.label * ((1 - self._p_t) ** self.gamma)
+
+        log1p = np.log(np.exp(-np.abs(self._p))+1)
+
+        self.sigmoid_cross_entropy = (1-self.label) * (log1p + np.clip(self._p, a_min=0, a_max=None)) + \
+                                    self.label * (log1p - np.clip(self._p, a_min=None, a_max=0))
+
+        logprobs = ((1-self.label) * self.first * self.second * self.sigmoid_cross_entropy) + \
+                    (self.label * self.first * self.second * self.sigmoid_cross_entropy)
+
+        data_loss = np.sum(logprobs*self.cls_weights)
 
         top[0].data[...] = data_loss
 
     def backward(self, top, propagate_down, bottom):
-        scores = bottom[0].data
-        labels = bottom[1].data
-        cls_weights = bottom[2].data
-        delta = np.zeros(scores.shape, dtype = np.float32)# np.zeros_like(bottom[0].data, dtype=np.float32)
-        # Compute sigmoid activations
-        scores =  1 / (1 + np.exp(-scores))
 
-        # for r in range(bottom[0].num):  # For each element in the batch
-        #     for c in range(len(labels[r, :])):  # For each class
-        #         p = scores[r, c]
-        #         if labels[r, c] == 0:
-        #             delta[r, c] = self.class_balances[str(c+1)] * -(p ** self.focusing_parameter) * ((self.focusing_parameter - p * self.focusing_parameter) * np.log(1-p) - p) # Gradient for classes with negative labels
-        #         else:  # If the class label != 0
-        #             delta[r, c] = self.class_balances[str(c+1)] * (((1 - p) ** self.focusing_parameter) * (
-        #             self.focusing_parameter * p * np.log(
-        #                 p) + p - 1))  # Gradient for classes with positive labels
+        dev_log1p = self._p / ((np.exp(np.abs(self._p))+1) * np.abs(self._p)) #derivitive ln(e^(-abs(x) + 1)
 
-        for r in range(scores.shape[2]):  # For each element in the batch
-            # for c in range(len(labels[r, :])):  # For each class
-            p = scores[:, :, r]
-            if labels[:, :, r] == 0:
-                delta[:,:,r] = -(p ** self.focusing_parameter) * ((self.focusing_parameter - p * self.focusing_parameter) * np.log(1-p) - p) # Gradient for classes with negative labels
-            else:  # If the class label != 0
-                delta[:,:,r] = (((1 - p) ** self.focusing_parameter) * (
-                self.focusing_parameter * p * np.log(
-                    p) + p - 1))  # Gradient for classes with positive labels
+        self.dev_sigmoid_cross_entropy =  (1-self.label) * (dev_log1p - np.clip(self._p, a_min=0, a_max=None)/self._p)  + \
+                                            self.label * (dev_log1p + np.clip(self._p, a_min=None, a_max=0)/self._p)
 
-        # bottom[0].diff[...] = delta / bottom[0].num
-        cls_weights = np.expand_dims(cls_weights, axis = 0)
-        bottom[0].diff[...] = delta * cls_weights
+        delta = (1-self.label) *  (self.first * self.second * (self.gamma * (1-self._p_t) * self.sigmoid_cross_entropy - self.dev_sigmoid_cross_entropy)) + \
+            self.label * (-self.first * self.second * (self.gamma * self._p_t * self.sigmoid_cross_entropy + self.dev_sigmoid_cross_entropy))
+
+        bottom[0].diff[...] = delta * self.cls_weights
+
+class WeightedSmoothL1Loss(caffe.Layer):
+
+    def setup(self, bottom, top):
+        # check input pair
+        # if len(bottom) != 2:
+        #     raise Exception("Need two inputs to compute distance (inference and labels).")
+        self.sigma = 3
+        self.encode_rad_error_by_sin = True
+
+    def reshape(self, bottom, top):
+        # check input dimensions match
+        if bottom[0].num != bottom[1].num:
+            raise Exception("Infered scores and labels must have the same dimension.")
+        top[0].reshape(1)
+
+    def forward(self, bottom, top):
+        box_preds = bottom[0].data
+        reg_targets = bottom[1].data
+        self.reg_weights = bottom[2].data
+        self.reg_weights = np.expand_dims(self.reg_weights,-1)
+
+        self.diff = box_preds - reg_targets
+
+        #use sin_difference rad to sin
+        if self.encode_rad_error_by_sin:
+
+            diff_rot = self.diff[...,-1:].copy() #copy rotation without add sin
+            self.sin_diff = np.sin(diff_rot)
+            self.cos_diff = np.cos(diff_rot)
+            self.diff[...,-1] = np.sin(self.diff[...,-1]) #use sin_difference
+
+        self.abs_diff = np.abs(self.diff)
+
+        self.cond = self.abs_diff < (1/(self.sigma**2))
+        loss = np.where(self.cond, 0.5 * self.sigma**2 * self.abs_diff**2,
+                                    self.abs_diff - 0.5/self.sigma**2)
+
+        reg_loss = loss * self.reg_weights
+
+        top[0].data[...] = np.sum(reg_loss)
+
+    def backward(self, top, propagate_down, bottom):
+
+        if self.encode_rad_error_by_sin:
+
+            delta = np.where(self.cond[...,:-1], (self.sigma**2) * self.diff[...,:-1], self.diff[...,:-1]/self.abs_diff[...,:-1])
+
+            delta_rotation = np.where(self.cond[...,-1:], (self.sigma**2) * self.sin_diff * self.cos_diff,
+                                    self.sin_diff/np.abs(self.sin_diff) * self.cos_diff)
+
+            delta = np.concatenate([delta, delta_rotation], axis=-1)
+
+        else:
+
+            delta = np.where(self.cond, (self.sigma**2) * self.diff, self.diff/self.abs_diff)
+
+        bottom[0].diff[...] = delta * self.reg_weights
 
 class EvalLayer(caffe.Layer):
 
@@ -799,8 +634,6 @@ class EvalLayer(caffe.Layer):
         batch_imgidx = bottom[7].data
         self.batch_image_shape = bottom[8].data
 
-        # print(batch_cls_preds)
-        # print(np.mean(batch_cls_preds))
 
         batch_size = batch_anchors.shape[0]
         batch_box_preds = batch_box_preds.reshape(batch_size, -1, self._box_coder.code_size)
@@ -988,7 +821,7 @@ class EvalLayer(caffe.Layer):
                 box_2d_preds = np.concatenate([minxy, maxxy], axis=1)
                 # predictions
                 # print("[debug] label ", label_preds)
-                print("[debug] label shape", label_preds.shape)
+                # print("[debug] label shape", label_preds.shape)
 
                 # print("[debug] scores ", final_scores)
                 # print("[debug] scores shape", final_scores.shape)
@@ -1511,26 +1344,6 @@ class EvalLayer_v2(caffe.Layer):
                 [img_idx] * num_example, dtype=np.int64)
         return annos
 
-class TestLayer(caffe.Layer):
-
-    def setup(self, bottom, top):
-        in1 = bottom[0].data
-        top[0].reshape(*in1.shape[:3],1)
-
-    def reshape(self, bottom, top):
-        pass
-    def forward(self, bottom, top):
-
-        in1 = bottom[0].data
-        in1 = in1.max(axis = 3, keepdims = True)
-
-        top[0].reshape(*in1.shape)
-        top[0].data[...] = in1
-        pass
-
-    def backward(self, top, propagate_down, bottom):
-        pass
-
 class LogLayer(caffe.Layer):
 
     def setup(self, bottom, top):
@@ -1573,7 +1386,6 @@ class LogLayer(caffe.Layer):
         diff = top[0].diff
         bottom[0].diff[...]=diff
         pass
-
 
 
 
@@ -1679,3 +1491,42 @@ class PickAndScale(caffe.Layer):
 
     def backward(self, top, propagate_down, bottom):
         pass  # TODO NOT_YET_IMPLEMENTED
+
+class SigmoidCrossEntropyWeightLossLayer(caffe.Layer):
+
+    def setup(self, bottom, top):
+        # check for all inputs
+        params = eval(self.param_str)
+        self.cls_weight = float(params["cls_weight"])
+        # if len(bottom) != 2:
+        #     raise Exception("Need two inputs (scores and labels) to compute sigmoid crossentropy loss.")
+
+    def reshape(self, bottom, top):
+        # check input dimensions match between the scores and labels
+        if bottom[0].count != bottom[1].count:
+            raise Exception("Inputs must have the same dimension.")
+        # difference would be the same shape as any input
+        self.diff = np.zeros_like(bottom[0].data, dtype=np.float32)
+        # layer output would be an averaged scalar loss
+        top[0].reshape(1)
+
+    def forward(self, bottom, top):
+        score=bottom[0].data
+        label=bottom[1].data
+        cls_weights=bottom[2].data
+
+        first_term = (label-1)*score
+        second_term = ((1-self.cls_weight)*label - 1)*np.log(1+np.exp(-score))
+
+
+        cls_weight = np.expand_dims(cls_weights, axis = 0)
+
+        top[0].data[...] = -np.sum((first_term + second_term)*cls_weights)
+
+        sig = -1.0/(1.0+np.exp(-score))
+        self.diff = ((self.cls_weight-1)*label+1)*sig + self.cls_weight*label
+        if np.isnan(top[0].data):
+                exit()
+
+    def backward(self, top, propagate_down, bottom):
+        bottom[0].diff[...]=self.diff
