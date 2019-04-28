@@ -47,9 +47,21 @@ def deconv_bn_relu(n, name, top_prev, ks, nout, stride=1, pad=0):
 
 def test_v1(phase,
             dataset_params=None,
+            model_cfg = None,
             deploy=False,
             create_prototxt=True,
-            save_path=None):
+            save_path=None,
+            ):
+
+    #RPN config
+    num_filters=list(model_cfg.rpn.num_filters)
+    layer_nums=list(model_cfg.rpn.layer_nums)
+    layer_strides=list(model_cfg.rpn.layer_strides)
+    num_upsample_filters=list(model_cfg.rpn.num_upsample_filters)
+    upsample_strides=list(model_cfg.rpn.upsample_strides)
+
+    box_code_size = 7
+    num_anchor_per_loc = 2
 
     n = caffe.NetSpec()
 
@@ -96,123 +108,31 @@ def test_v1(phase,
                                                                 ))))
     top_prev = n['PillarScatter']
 
-    ###RPN layer
-    num_filters = [64,128,256]
-    layer_nums = [3,5,5]
-    layer_strides = [2, 2, 2]
-    num_upsample_filters = [128, 128, 128]
-    upsample_strides = [1, 2, 4]
 
     top_prev = conv_bn_relu(n, "ini_conv1", top_prev, 3, num_filters[0], stride=layer_strides[0], pad=1, loop=1)
 
-    top_prev = conv_bn_relu(n, "rpn_conv1", top_prev, 3, num_filters[0], stride=1, pad=1, loop=1)
+    top_prev = conv_bn_relu(n, "rpn_conv1", top_prev, 3, num_filters[0], stride=1, pad=1, loop=3)
 
-    top_prev = deconv_bn_relu(n, "rpn_deconv1", top_prev, upsample_strides[0], num_upsample_filters[0], stride=upsample_strides[0], pad=0)
+    deconv1 = deconv_bn_relu(n, "rpn_deconv1", top_prev, upsample_strides[0], num_upsample_filters[0], stride=upsample_strides[0], pad=0)
 
-    #################################deconv1-end###############################1
 
-    ##############################init-2 cov w/2, h/2#############################
-    # n['init_conv2'] = L.Convolution(top_prev,
-    #                                      convolution_param=dict(num_output=num_filters[1],
-    #                                                             kernel_size=3, stride=layer_strides[1], pad=1,
-    #                                                             weight_filler=dict(type = 'xavier'),
-    #                                                             bias_term = False,
-    #                                                             engine=1,
-    #                                                             ),
-    #                                      param=[dict(lr_mult=1)])
-    #
-    # top_prev = L.BatchNorm(n['init_conv2'], batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.01))
-    # top_prev = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    # top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
+    top_prev = conv_bn_relu(n, "ini_conv2", top_prev, 3, num_filters[1], stride=layer_strides[1], pad=1, loop=1)
 
-    #ini_conv2 = conv_bn_relu(conv1, 3, num_filters[1], stride=layer_strides[1], pad=1)
+    top_prev = conv_bn_relu(n, "rpn_conv2", top_prev, 3, num_filters[1], stride=1, pad=1, loop=3)
 
-    # for idx, _ in enumerate(range(layer_nums[1])):
-    #     n['rpn_conv2_' + str(idx)] = L.Convolution(top_prev,
-    #                                          convolution_param=dict(num_output=num_filters[1],
-    #                                                                 kernel_size=3, stride=1, pad=1,
-    #                                                                 weight_filler=dict(type = 'xavier'),
-    #                                                                 bias_term = False,
-    #                                                                 engine=1,
-    #                                                                 ),
-    #                                          param=[dict(lr_mult=1)])
-    #
-    #     top_prev = L.BatchNorm(n['rpn_conv2_' + str(idx)], batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.01))
-    #     top_prev = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    #     top_prev = L.ReLU(top_prev)# , relu_param=dict(negative_slope = 0.1))
+    deconv2 = deconv_bn_relu(n, "rpn_deconv2", top_prev, upsample_strides[1], num_upsample_filters[1], stride=upsample_strides[1], pad=0)
 
-    #conv2 = conv_bn_relu(ini_conv2, 3, num_filters[1], stride=1, pad=1)
 
-    ################################deconv2_start##############################2
-    # n['rpn_deconv2'] = L.Deconvolution(top_prev,
-    #                                      convolution_param=dict(num_output=num_upsample_filters[1],
-    #                                                             kernel_size=upsample_strides[1], stride=upsample_strides[1], pad=0,
-    #                                                             weight_filler=dict(type = 'xavier'),
-    #                                                             bias_term = False,
-    #                                                             engine=1,
-    #                                                             ),
-    #                                      param=[dict(lr_mult=1)])
-    #
-    # deconv2 = L.BatchNorm(n['rpn_deconv2'], batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.01))
-    # deconv2 = L.Scale(deconv2, scale_param=dict(bias_term=True))
-    # deconv2 = L.ReLU(deconv2)# , relu_param=dict(negative_slope = 0.1))
+    top_prev = conv_bn_relu(n, "ini_conv3", top_prev, 3, num_filters[2], stride=layer_strides[2], pad=1, loop=1)
 
-    #deconv2 = deconv_bn_relu(conv2, upsample_strides[1], num_upsample_filters[1], stride=upsample_strides[1], pad=0)
+    top_prev = conv_bn_relu(n, "rpn_conv3", top_prev, 3, num_filters[2], stride=1, pad=1, loop=3)
 
-    #################################deconv2-end###############################2
+    deconv3 = deconv_bn_relu(n, "rpn_deconv3", top_prev, upsample_strides[2], num_upsample_filters[2], stride=upsample_strides[2], pad=0)
 
-    ##############################init-3 cov w/2, h/2#############################
-    # n['init_conv3'] = L.Convolution(top_prev,
-    #                                      convolution_param=dict(num_output=num_filters[2],
-    #                                                             kernel_size=3, stride=layer_strides[2], pad=1,
-    #                                                             weight_filler=dict(type = 'xavier'),
-    #                                                             bias_term = False,
-    #                                                             engine=1,
-    #                                                             ),
-    #                                      param=[dict(lr_mult=1)])
-    #
-    # top_prev = L.BatchNorm(n['init_conv3'], batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.01))
-    # top_prev = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    # top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
 
-    #ini_conv3 = conv_bn_relu(conv2, 3, num_filters[2], stride=layer_strides[2], pad=1)
+    n['rpn_out'] = L.Concat(deconv1, deconv2, deconv3)
+    top_prev = n['rpn_out']
 
-    # # ##
-    # for idx, _ in enumerate(range(layer_nums[2])):
-    #     n['rpn_conv3_' + str(idx)] = L.Convolution(top_prev,
-    #                                          convolution_param=dict(num_output=num_filters[2],
-    #                                                                 kernel_size=3, stride=1, pad=1,
-    #                                                                 weight_filler=dict(type = 'xavier'),
-    #                                                                 bias_term = False,
-    #                                                                 engine=1,
-    #                                                                 ),
-    #                                          param=[dict(lr_mult=1)])
-    #
-    #     top_prev = L.BatchNorm(n['rpn_conv3_' + str(idx)], batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.01))
-    #     top_prev = L.Scale(top_prev, scale_param=dict(bias_term=True))
-    #     top_prev = L.ReLU(top_prev)#, relu_param=dict(negative_slope = 0.1))
-
-    #conv3 = conv_bn_relu(ini_conv3, 3, num_filters[2], stride=1, pad=1)
-
-    ################################deconv3_start##############################3
-    # n['rpn_deconv3'] = L.Deconvolution(top_prev,
-    #                                      convolution_param=dict(num_output=num_upsample_filters[2],
-    #                                                             kernel_size=upsample_strides[2], stride=upsample_strides[2], pad=0,
-    #                                                             weight_filler=dict(type = 'xavier'),
-    #                                                             bias_term = False,
-    #                                                             engine=1,
-    #                                                             ),
-    #                                      param=[dict(lr_mult=1)])
-    #
-    # deconv3 = L.BatchNorm(n['rpn_deconv3'], batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.01))
-    # deconv3 = L.Scale(deconv3, scale_param=dict(bias_term=True))
-    # deconv3 = L.ReLU(deconv3)#, relu_param=dict(negative_slope = 0.1))
-
-    #deconv3 = deconv_bn_relu(conv3, upsample_strides[2], num_upsample_filters[2], stride=upsample_strides[2], pad=0)
-
-    # ##
-    #n['rpn_out'] = L.Concat(deconv1, deconv2, deconv3)
-    # top_prev = n['rpn_out']
 
     num_cls = 2
     n['cls_preds'] = L.Convolution(top_prev, name = "cls_head",
@@ -309,5 +229,6 @@ def test_v1(phase,
 
 
         return n.to_proto()
+
     else:
         raise ValueError

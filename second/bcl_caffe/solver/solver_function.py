@@ -9,6 +9,7 @@ import second.data.kitti_common as kitti
 # from tqdm import tqdm
 # from second.builder import target_assigner_builder, voxel_builder
 # from visualdl import LogWriter
+import numpy as np
 
 def get_prototxt(solver_proto, save_path=None):
     if save_path:
@@ -81,9 +82,9 @@ class SolverWrapper:
     def __init__(self,  train_net,
                         test_net,
                         prefix,
-                        solver_type='SGD',
+                        solver_type='ADAM',
                         weight_decay=0.001,
-                        base_lr=0.01,
+                        base_lr=0.002,
                         gamma=0.8, #0.1 for lr_policy
                         stepsize=100,
                         test_iter=3768,
@@ -96,7 +97,7 @@ class SolverWrapper:
                         debug_info=False,
                         create_prototxt=True,
                         save_path=None):
-
+        """Initialize the SolverWrapper."""
         self.solver_param = caffe_pb2.SolverParameter()
         self.solver_param.train_net = train_net
         self.solver_param.test_net.extend([test_net])
@@ -145,7 +146,7 @@ class SolverWrapper:
         #     self.sc_val_acc = logger.scalar("Accuracy")
         #     self.sc_val_mAP = logger.scalar("mAP")
 
-    def train_solver(self):
+    def load_solver(self):
         return self.solver
 
 
@@ -160,23 +161,122 @@ class SolverWrapper:
             print("perpare to start train")
             step=0
             for i in range(self.test_interval):
-                self.solver.step(1) #forward + backward + update weights
+
                 # self.solver.net.forward()
-                w = self.solver.net.params["Mlp"][0].data[...]
-                # b = self.solver.net.params["Mlp"][1].data[...]
-                print(w)
-                print(w.shape)
+                # w = self.solver.net.params["Mlp"][0].data[...]
+                #mlp
+                torch_mlp_weight_path = '0_voxel_feature_extractor.pfn_layers.0.Conv2d.weight.npy'
+                torch_bn_mean_path = '14_voxel_feature_extractor.pfn_layers.0.norm.running_mean.npy'
+                torch_bn_var_path = '15_voxel_feature_extractor.pfn_layers.0.norm.running_var.npy'
+                torch_sc_weight_path = '1_voxel_feature_extractor.pfn_layers.0.norm.weight.npy'
+                torch_sc_bias_path = '2_voxel_feature_extractor.pfn_layers.0.norm.bias.npy'
 
-                self.solver.test_nets[0].share_with(self.solver.net)
+                #block1
+                torch_block1_weight_path = '3_rpn.block1.0.weight.npy'
+                torch_block1_bn_mean_path = '16_rpn.block1.1.running_mean.npy'
+                torch_block1_bn_var_path = '17_rpn.block1.1.running_var.npy'
+                torch_block1_alpha_path = '4_rpn.block1.1.weight.npy'
+                torch_block1_belta_path = '5_rpn.block1.1.bias.npy'
 
-                # t_w = self.solver.test_nets[0].params["Mlp"][0].data[...]
-                t_w = self.solver.test_nets[0].params["Mlp"][0].data[...]
-                print("------test-------")
-                print(t_w)
-                print(t_w == w)
-                # print(b.shape)
+                torch_block1_rpncov1_weight_path = '6_rpn.block1.3.weight.npy'
+                torch_block1_rpncov1_bn_mean_path = '18_rpn.block1.4.running_mean.npy'
+                torch_block1_rpncov1_bn_var_path = '19_rpn.block1.4.running_var.npy'
+                torch_block1_rpncov1_alpha_path = '7_rpn.block1.4.weight.npy'
+                torch_block1_rpncov1_belta_path = '8_rpn.block1.4.bias.npy'
+
+                torch_block1_decov1_weight_path = '9_rpn.deconv1.0.weight.npy'
+                torch_block1_decov1_bn_mean_path = '20_rpn.deconv1.1.running_mean.npy'
+                torch_block1_decov1_bn_var_path = '21_rpn.deconv1.1.running_var.npy'
+                torch_block1_decov1_alpha_path = '10_rpn.deconv1.1.weight.npy'
+                torch_block1_decov1_belta_path = '11_rpn.deconv1.1.bias.npy'
+
+                #result
+                torch_cls_weight_path = '12_rpn.conv_cls.weight.npy'
+                torch_cls_bias_path = '13_rpn.conv_cls.bias.npy'
+                torch_box_weight_path = '14_rpn.conv_box.weight.npy'
+                torch_box_bias_path = '15_rpn.conv_box.bias.npy'
+
+
+
+                torch_mlp_w = np.load('./weights/'+torch_mlp_weight_path)
+                torch_mlp_mean = np.load('./weights/'+torch_bn_mean_path)
+                torch_mlp_var = np.load('./weights/'+torch_bn_var_path)
+                torch_mlp_alpha = np.load('./weights/'+torch_sc_weight_path)
+                torch_mlp_belta = np.load('./weights/'+torch_sc_bias_path)
+
+                #block1
+                torch_block1_w = np.load('./weights/'+torch_block1_weight_path)
+                torch_block1_mean = np.load('./weights/'+torch_block1_bn_mean_path)
+                torch_block1_var = np.load('./weights/'+torch_block1_bn_var_path)
+                torch_block1_alpha = np.load('./weights/'+torch_block1_alpha_path)
+                torch_block1_belta = np.load('./weights/'+torch_block1_belta_path)
+
+                torch_block1_rpncov1_w = np.load('./weights/'+torch_block1_rpncov1_weight_path)
+                torch_block1_rpncov1_mean = np.load('./weights/'+torch_block1_rpncov1_bn_mean_path)
+                torch_block1_rpncov1_var = np.load('./weights/'+torch_block1_rpncov1_bn_var_path)
+                torch_block1_rpncov1_alpha = np.load('./weights/'+torch_block1_rpncov1_alpha_path)
+                torch_block1_rpncov1_belta = np.load('./weights/'+torch_block1_rpncov1_belta_path)
+
+                torch_block1_decov1_w = np.load('./weights/'+torch_block1_decov1_weight_path)
+                torch_block1_decov1_mean = np.load('./weights/'+torch_block1_decov1_bn_mean_path)
+                torch_block1_decov1_var = np.load('./weights/'+torch_block1_decov1_bn_var_path)
+                torch_block1_decov1_alpha = np.load('./weights/'+torch_block1_decov1_alpha_path)
+                torch_block1_decov1_belta = np.load('./weights/'+torch_block1_decov1_belta_path)
+
+                #result
+                torch_clshead_w = np.load('./weights/'+torch_cls_weight_path)
+                torch_clshead_b = np.load('./weights/'+torch_cls_bias_path)
+                torch_boxhead_w = np.load('./weights/'+torch_box_weight_path)
+                torch_boxhead_b = np.load('./weights/'+torch_box_bias_path)
+
+
+                #mlp
+                self.solver.net.params["Mlp"][0].data[...] = torch_mlp_w ## feed torch weights
+                self.solver.net.params["bn1"][0].data[...] = torch_mlp_mean ## feed torch BN mean
+                self.solver.net.params["bn1"][1].data[...] = torch_mlp_var ## feed torch BN var
+                self.solver.net.params["bn1"][2].data[...] = 1 ## Force set caffe bn[2] ==1 , because caffe using sum weights !
+                self.solver.net.params["sc1"][0].data[...] = torch_mlp_alpha ## feed torch SC alpha
+                self.solver.net.params["sc1"][1].data[...] = torch_mlp_belta ## feed torch SC belta
+
+
+                #block1
+                self.solver.net.params["init_conv1"][0].data[...] = torch_block1_w ## feed torch weights
+                self.solver.net.params["bn2"][0].data[...] = torch_block1_mean ## feed torch BN mean
+                self.solver.net.params["bn2"][1].data[...] = torch_block1_var ## feed torch BN var
+                self.solver.net.params["bn2"][2].data[...] = 1 ## Force set caffe bn[2] ==1 , because caffe using sum weights !
+                self.solver.net.params["sc2"][0].data[...] = torch_block1_alpha ## feed torch SC alpha
+                self.solver.net.params["sc2"][1].data[...] = torch_block1_belta ## feed torch SC belta
+
+                self.solver.net.params["rpn_conv1_3"][0].data[...] = torch_block1_rpncov1_w ## feed torch weights
+                self.solver.net.params["bn3"][0].data[...] = torch_block1_rpncov1_mean ## feed torch BN mean
+                self.solver.net.params["bn3"][1].data[...] = torch_block1_rpncov1_var ## feed torch BN var
+                self.solver.net.params["bn3"][2].data[...] = 1 ## Force set caffe bn[2] ==1 , because caffe using sum weights !
+                self.solver.net.params["sc3"][0].data[...] = torch_block1_rpncov1_alpha ## feed torch SC alpha
+                self.solver.net.params["sc3"][1].data[...] = torch_block1_rpncov1_belta ## feed torch SC belta
+
+                self.solver.net.params["rpn_deconv1"][0].data[...] = torch_block1_decov1_w ## feed torch weights
+                self.solver.net.params["bn4"][0].data[...] = torch_block1_decov1_mean ## feed torch BN mean
+                self.solver.net.params["bn4"][1].data[...] = torch_block1_decov1_var ## feed torch BN var
+                self.solver.net.params["bn4"][2].data[...] = 1 ## Force set caffe bn[2] ==1 , because caffe using sum weights !
+                self.solver.net.params["sc4"][0].data[...] = torch_block1_decov1_alpha ## feed torch SC alpha
+                self.solver.net.params["sc4"][1].data[...] = torch_block1_decov1_belta ## feed torch SC belta
+
+
+                #result
+                self.solver.net.params["cls_head"][0].data[...] = torch_clshead_w ## feed torch weights
+                self.solver.net.params["cls_head"][1].data[...] = torch_clshead_b ## feed torch weights
+                self.solver.net.params["reg_head"][0].data[...] = torch_boxhead_w ## feed torch weights
+                self.solver.net.params["reg_head"][1].data[...] = torch_boxhead_b ## feed torch weights
+
+                # print("1st", torch_mlp_w)
+
+                # self.solver.step(1) #forward + backward + update weights
+                self.solver.step(1)
+                # print("second", self.solver.net.params["Mlp"][0].data[...])
+
+
                 step+=1
-                if step == 1:
+                if step == 2:
                     exit()
                 # reg_loss = self.solver.net.blobs['reg_loss'].data
                 # cls_loss = self.solver.net.blobs['cls_loss'].data

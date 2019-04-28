@@ -2,9 +2,8 @@ import numpy as np
 import caffe
 import pathlib
 import shutil
-import time
-from functools import partial
-
+import timeit
+import numba
 from second.bcl_caffe.utils import get_paddings_indicator_caffe
 from second.builder import target_assigner_builder, voxel_builder
 from second.bcl_caffe.builder import input_reader_builder, box_coder_builder_caffe
@@ -24,6 +23,9 @@ from enum import Enum
 import torch
 import torch.utils.data
 import gc
+
+# import time
+# from functools import partial
 
 class LossNormType(Enum):
     NormByNumPositives = "norm_by_num_positives"
@@ -55,8 +57,8 @@ class InputKittiData(caffe.Layer):
         # self.index_list = np.arange(3712)
         # np.random.shuffle(self.index_list)
         # self.iter = iter(self.index_list)
-
-        self.data = iter(self.load_data()) # self.data = self.load_data()
+        self.cfg = self.load_config()
+        self.data = iter(self.load_data(self.cfg))
 
         for _ in range(self.batch_size):
             # index = self.index_list[next(self.iter, None)]
@@ -78,7 +80,8 @@ class InputKittiData(caffe.Layer):
 
         features = self.PillarFeatureNet(voxels, coors, num_points)
 
-        self.data = iter(self.load_data())
+        # self.data = iter(self.load_data())
+        self.data = iter(self.load_data(self.cfg))
 
         top[0].reshape(*features.shape) #[1,9,7000,100]
         top[1].reshape(*coors.shape) #[7000,4]
@@ -115,7 +118,7 @@ class InputKittiData(caffe.Layer):
     def forward(self, bottom, top):
         for _ in range(self.batch_size):
             # index = self.index_list[next(self.iter, None)]
-            # if index == None:
+            # if index == None:cfg = dict(input_cfg=input_cfg)
             #     np.random.shuffle(self.index_list)
             #     self.iter = iter(self.index_list)
             #     index = self.index_list[next(self.iter)]
@@ -123,7 +126,8 @@ class InputKittiData(caffe.Layer):
                 example = next(self.data)
             except StopIteration:
                 print("[info]>>>>>>>>>>>>>>>>>>> start a new epoch for {} data ".format(self.phase))
-                self.data = iter(self.load_data())
+                # self.data = iter(self.load_data())
+                self.data = iter(self.load_data(self.cfg))
                 example = next(self.data)
 
             self.example_batch.append(example)
@@ -150,7 +154,7 @@ class InputKittiData(caffe.Layer):
             top[3].reshape(*reg_targets.shape) #[]
             top[2].data[...] = labels
             top[3].data[...] = reg_targets
-            print("[debug] train img idx : ", example["image_idx"])
+            # print("[debug] train img idx : ", example["image_idx"])
 
         elif self.phase == 'eval':
 
@@ -165,7 +169,7 @@ class InputKittiData(caffe.Layer):
                 batch_anchors_mask = example["anchors_mask"].reshape(batch_size, -1)
             batch_imgidx = example['image_idx']
             batch_image_shape = example['image_shape']
-            print("[debug] eval img idx : ", batch_imgidx)
+            # print("[debug] eval img idx : ", batch_imgidx)
 
             ###################################################################
             top[2].reshape(*batch_anchors.shape)
@@ -186,7 +190,7 @@ class InputKittiData(caffe.Layer):
     def backward(self, top, propagate_down, bottom):
         pass
 
-    def load_data(self):
+    def load_config(self):
 
         model_dir = pathlib.Path(self.model_dir)
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -215,6 +219,14 @@ class InputKittiData(caffe.Layer):
         target_assigner_cfg = model_cfg.target_assigner
         target_assigner = target_assigner_builder.build(target_assigner_cfg,
                                                         bv_range, box_coder)
+
+
+        return (input_cfg, eval_input_cfg, model_cfg, voxel_generator, target_assigner)
+
+    def load_data(self, cfg):
+
+        input_cfg, eval_input_cfg, model_cfg, \
+            voxel_generator, target_assigner = cfg[0],cfg[1],cfg[2],cfg[3],cfg[4]
 
         if self.phase == 'train':
             dataset = input_reader_builder.build(
@@ -425,10 +437,6 @@ class PrepareLossWeight(caffe.Layer):
             reg_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None) #(1, 107136)
             cls_weights /= np.clip(pos_normalizer, a_min=1.0, a_max=None) #(1, 107136)
 
-            # make shape as (1,7, anchors)
-            # reg_weights = np.repeat(reg_weights, 7, axis=0)
-            # reg_weights = np.expand_dims(reg_weights, axis=0)
-
         elif loss_norm_type == LossNormType.NormByNumPosNeg:
             pos_neg = np.stack([positives, negatives], a_min=-1).astype(dtype)
             normalizer = np.sum(pos_neg, 1, keepdims=True)  # [N, 1, 2]
@@ -512,7 +520,8 @@ class WeightFocalLoss(caffe.Layer):
 
         self.second = (1-self.label) * ((self._p_t) ** self.gamma) + self.label * ((1 - self._p_t) ** self.gamma)
 
-        log1p = np.log(np.exp(-np.abs(self._p))+1)
+        # log1p = np.log(np.exp(-np.abs(self._p))+1)
+        log1p = np.log1p(np.exp(-np.abs(self._p)))
 
         self.sigmoid_cross_entropy = (1-self.label) * (log1p + np.clip(self._p, a_min=0, a_max=None)) + \
                                     self.label * (log1p - np.clip(self._p, a_min=None, a_max=0))
@@ -520,13 +529,12 @@ class WeightFocalLoss(caffe.Layer):
         logprobs = ((1-self.label) * self.first * self.second * self.sigmoid_cross_entropy) + \
                     (self.label * self.first * self.second * self.sigmoid_cross_entropy)
 
-        data_loss = np.sum(logprobs*self.cls_weights)
-
-        top[0].data[...] = data_loss
+        top[0].data[...] = np.sum(logprobs*self.cls_weights)
 
     def backward(self, top, propagate_down, bottom):
 
-        dev_log1p = self._p / ((np.exp(np.abs(self._p))+1) * np.abs(self._p)) #derivitive ln(e^(-abs(x) + 1)
+        # dev_log1p = self._p / ((np.exp(np.abs(self._p))+1) * np.abs(self._p)) #derivitive ln(e^(-abs(x) + 1)
+        dev_log1p = np.sign(self._p) * (1 / (np.exp(np.abs(self._p))+1))  # might fix divided by 0 x/|x| bug
 
         self.dev_sigmoid_cross_entropy =  (1-self.label) * (dev_log1p - np.clip(self._p, a_min=0, a_max=None)/self._p)  + \
                                             self.label * (dev_log1p + np.clip(self._p, a_min=None, a_max=0)/self._p)
@@ -581,16 +589,20 @@ class WeightedSmoothL1Loss(caffe.Layer):
 
         if self.encode_rad_error_by_sin:
 
-            delta = np.where(self.cond[...,:-1], (self.sigma**2) * self.diff[...,:-1], self.diff[...,:-1]/self.abs_diff[...,:-1])
+            # delta = np.where(self.cond[...,:-1], (self.sigma**2) * self.diff[...,:-1], self.diff[...,:-1]/self.abs_diff[...,:-1])
+            delta = np.where(self.cond[...,:-1], (self.sigma**2) * self.diff[...,:-1], np.sign(self.diff[...,:-1]))
 
+            # delta_rotation = np.where(self.cond[...,-1:], (self.sigma**2) * self.sin_diff * self.cos_diff,
+                                    # self.sin_diff/np.abs(self.sin_diff) * self.cos_diff)
             delta_rotation = np.where(self.cond[...,-1:], (self.sigma**2) * self.sin_diff * self.cos_diff,
-                                    self.sin_diff/np.abs(self.sin_diff) * self.cos_diff)
+                                        np.sign(self.sin_diff) * self.cos_diff) #if sign(0) is gonna be 0!!!!!!!!!!!!!!
 
             delta = np.concatenate([delta, delta_rotation], axis=-1)
 
         else:
 
-            delta = np.where(self.cond, (self.sigma**2) * self.diff, self.diff/self.abs_diff)
+            # delta = np.where(self.cond, (self.sigma**2) * self.diff, self.diff/self.abs_diff)
+            delta = np.where(self.cond, (self.sigma**2) * self.diff, np.sign(self.diff))
 
         bottom[0].diff[...] = delta * self.reg_weights * 2
 
@@ -743,12 +755,8 @@ class EvalLayer(caffe.Layer):
                 if self._nms_score_threshold > 0.0:
                     thresh = self._nms_score_threshold
                     top_scores_keep = top_scores >= thresh
-                    # print("[debug] top_scores_keep", top_scores_keep)
-                    # print("[debug] top_scores_keep shape", top_scores_keep.shape)
-                    top_scores = top_scores[top_scores_keep]
-                    # print("[debug] top_scores", top_scores)
-                    # print("[debug] top_scores shape", top_scores.shape)
 
+                    top_scores = top_scores[top_scores_keep]
 
                 if top_scores.shape[0] != 0:
                     if self._nms_score_threshold > 0.0:
@@ -802,8 +810,7 @@ class EvalLayer(caffe.Layer):
                 final_box_preds = box_preds
                 final_scores = scores
                 final_labels = label_preds
-                # print("final_box_preds shape", final_box_preds.shape)
-                # print("final_box_preds", final_box_preds)
+
                 final_box_preds_camera = box_caffe_ops.box_lidar_to_camera( ## TODO: double check
                     final_box_preds, rect, Trv2c)
                 locs = final_box_preds_camera[:, :3]
@@ -819,15 +826,7 @@ class EvalLayer(caffe.Layer):
                 maxxy = np.amax(box_corners_in_image, axis=1)
 
                 box_2d_preds = np.concatenate([minxy, maxxy], axis=1)
-                # predictions
-                # print("[debug] label ", label_preds)
-                # print("[debug] label shape", label_preds.shape)
 
-                # print("[debug] scores ", final_scores)
-                # print("[debug] scores shape", final_scores.shape)
-                #
-                # print("[debug] box3d_lidar ", final_box_preds)
-                # print("[debug] box3d_lidar ", final_box_preds.shape)
 
                 predictions_dict = {
                     "bbox": box_2d_preds,
@@ -868,8 +867,6 @@ class EvalLayer(caffe.Layer):
     def backward(self, top, propagate_down, bottom):
         pass
     def load_generator(self):
-
-        result_path = None
 
         model_dir = pathlib.Path(self.model_dir)
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -1005,7 +1002,6 @@ class EvalLayer_v2(caffe.Layer):
         self.dt_annos = []
 
         top[0].reshape(1)
-
     def reshape(self, bottom, top):
         pass
     def forward(self, bottom, top):
@@ -1053,15 +1049,12 @@ class EvalLayer_v2(caffe.Layer):
             if self._use_direction_classifier:
                 if a_mask is not None:
                     dir_preds = dir_preds[a_mask]
-                # print(dir_preds.shape)
                 dir_labels = torch.max(dir_preds, dim=-1)[1]
 
                 # this don't support softmax
 
             assert self._use_sigmoid_score is True
             total_scores = torch.sigmoid(cls_preds)
-            # print("[debug total_scores]", total_scores)
-            # print("[debug  total_scores shape]", total_scores.shape)
 
             # Apply NMS in birdeye view
             nms_func = box_torch_ops.nms
@@ -1081,17 +1074,13 @@ class EvalLayer_v2(caffe.Layer):
                     dtype=torch.long)
             else:
                 top_scores, top_labels = torch.max(total_scores, dim=-1)
-            # print("[debug]", top_scores)
-            # print("[debug shape]", top_scores.shape)
+
             if self._nms_score_threshold > 0.0:
                 thresh = torch.tensor(
                     [self._nms_score_threshold],
                     device=total_scores.device).type_as(total_scores)
                 top_scores_keep = (top_scores >= thresh)
-                # print("[debug] top_scores_keep", top_scores_keep)
-                print("[debug] top_scores_keep shape", top_scores_keep.shape)
                 top_scores = top_scores.masked_select(top_scores_keep)
-                print("[debug] top_scores shape", top_scores.shape)
             if top_scores.shape[0] != 0:
                 if self._nms_score_threshold > 0.0:
                     box_preds = box_preds[top_scores_keep]
@@ -1113,7 +1102,7 @@ class EvalLayer_v2(caffe.Layer):
                     post_max_size=self._nms_post_max_size,
                     iou_threshold=self._nms_iou_threshold,
                 )
-                # print("[debug] selected", selected)
+
             else:
                 selected = None
 
@@ -1141,7 +1130,7 @@ class EvalLayer_v2(caffe.Layer):
                 final_box_preds = box_preds
                 final_scores = scores
                 final_labels = label_preds
-                print("final_label_preds shape", final_labels.shape)
+                # print("final_label_preds shape", final_labels.shape)
                 final_box_preds_camera = box_torch_ops.box_lidar_to_camera(
                     final_box_preds, rect, Trv2c)
                 locs = final_box_preds_camera[:, :3]
@@ -1185,33 +1174,6 @@ class EvalLayer_v2(caffe.Layer):
 
         if len(self.dt_annos) == len(self.gt_annos):
 
-
-            # print("2 \n ",self.dt_annos[2]['location'])
-            # print("5 \n ", self.dt_annos[5]['location'])
-
-            # car_mask = self.gt_annos[0]['name']=='Car'
-            # gt_dimensions = self.gt_annos[0]['dimensions'][car_mask]
-            # gt_location = self.gt_annos[0]['location'][car_mask]
-            # gt_bbox = self.gt_annos[0]['bbox'][car_mask]
-            #
-            # dt_dimensions = self.dt_annos[0]['dimensions']
-            # dt_location = self.dt_annos[0]['location']
-            # dt_bbox = self.dt_annos[0]['bbox']
-
-            #print("gt_dimensions \n", gt_dimensions)
-            #print("gt_location \n", gt_location)
-            #print("gt_bbox \n", gt_bbox)
-
-            #print("dt_dimensions \n", dt_dimensions)
-            #print("dt_location \n", dt_location)
-            #print("dt_bbox \n", dt_bbox)
-
-            #print("dt_dimensions_diff \n", dt_dimensions-gt_dimensions)
-            #print("dt_location_diff \n", dt_location-gt_location)
-            #print("dt_bbox_diff \n", dt_bbox-gt_bbox)
-
-            #print("detecion numebr", len(dt_dimensions))
-
             result, mAPbbox, mAPbev, mAP3d, mAPaos = get_official_eval_result(self.gt_annos, self.dt_annos, self.class_names,
                                                                                   return_data=True)
             print(result)
@@ -1221,6 +1183,7 @@ class EvalLayer_v2(caffe.Layer):
             print(result)
 
             self.dt_annos = []
+
             print("[info] empty self.dt_annos :> dt.annos len : ", len(self.dt_annos))
 
         top[0].reshape(1)
@@ -1229,8 +1192,6 @@ class EvalLayer_v2(caffe.Layer):
     def backward(self, top, propagate_down, bottom):
         pass
     def load_generator(self):
-
-        result_path = None
 
         model_dir = pathlib.Path(self.model_dir)
         model_dir.mkdir(parents=True, exist_ok=True)
@@ -1354,30 +1315,6 @@ class LogLayer(caffe.Layer):
         pass
     def forward(self, bottom, top):
         in1 = bottom[0].data
-
-        # print("after mlp features ", in1)
-        # print("after mlp features shape", in1.shape)
-        # print("after mlp features sum", np.sum(in1))
-        # print("after mlp features mean", np.mean(in1))
-        """
-        14/4/2019
-
-        print("---------did mlp ------------")
-        print("\n")
-        for i in range(1):
-            print("---------------> pillar num #: ", i)
-            #print("each pillar points ", in1[:,:, i, :])
-            # print("each pillar points shape", in1[:,:, i, :].shape)
-            # print("each pillar points sum ", in1[:,:, i, :].sum())
-            # print("each pillar points mean ", in1[:,:, i, :].mean())
-            for j in range(in1.shape[3]):
-                if np.sum(in1[:,:, i, j]) != 0:
-                    print("point index --> ", j)
-                    print(in1[:,:, i, j])
-                    print("point sum", np.sum(in1[:,:, i, j]))
-                    print("point mean", np.mean(in1[:,:, i, j]))
-        """
-
         top[0].reshape(*in1.shape)
         top[0].data[...] = in1
         pass
@@ -1386,8 +1323,6 @@ class LogLayer(caffe.Layer):
         diff = top[0].diff
         bottom[0].diff[...]=diff
         pass
-
-
 
 class GlobalPooling(caffe.Layer):
     def setup(self, bottom, top):
@@ -1479,6 +1414,7 @@ class PickAndScale(caffe.Layer):
                 self.dims.append((int(f[:f.find('*')]), float(f[f.find('*') + 1:])))
             elif f.find('/') >= 0:
                 self.dims.append((int(f[:f.find('/')]), 1.0 / float(f[f.find('/') + 1:])))
+
             else:
                 self.dims.append((int(f), 1.0))
 

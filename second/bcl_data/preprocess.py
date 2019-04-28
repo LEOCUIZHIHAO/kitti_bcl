@@ -80,7 +80,7 @@ def prep_pointcloud(input_dict,
                     bev_only=False,
                     use_group_id=False,
                     out_dtype=np.float32):
-    """convert point cloud to voxels, create targets if ground truths 
+    """convert point cloud to voxels, create targets if ground truths
     exists.
     """
     points = input_dict["points"]
@@ -145,7 +145,9 @@ def prep_pointcloud(input_dict,
                 group_ids = group_ids[keep_mask]
         gt_boxes_mask = np.array(
             [n in class_names for n in gt_names], dtype=np.bool_)
+
         if db_sampler is not None:
+
             sampled_dict = db_sampler.sample_all(
                 root_path,
                 gt_boxes,
@@ -186,6 +188,7 @@ def prep_pointcloud(input_dict,
         if bev_only:  # set z and h to limits
             gt_boxes[:, 2] = pc_range[2]
             gt_boxes[:, 5] = pc_range[5] - pc_range[2]
+
         prep.noise_per_object_v3_(
             gt_boxes,
             points,
@@ -195,6 +198,7 @@ def prep_pointcloud(input_dict,
             global_random_rot_range=global_random_rot_range,
             group_ids=group_ids,
             num_try=100)
+
         # should remove unrelated objects after noise per object
         gt_boxes = gt_boxes[gt_boxes_mask]
         gt_names = gt_names[gt_boxes_mask]
@@ -202,6 +206,7 @@ def prep_pointcloud(input_dict,
             group_ids = group_ids[gt_boxes_mask]
         gt_classes = np.array(
             [class_names.index(n) + 1 for n in gt_names], dtype=np.int32)
+
 
         gt_boxes, points = prep.random_flip(gt_boxes, points)
         gt_boxes, points = prep.global_rotation(
@@ -353,9 +358,14 @@ def _read_and_prep_v9(info, root_path, num_point_features, prep_func):
             input_dict['group_ids'] = annos["group_ids"]
     example = prep_func(input_dict=input_dict)
     example["image_idx"] = image_idx
+
+    # print("image_idx", example["image_idx"])
+    # print("voxels shape", example["voxels"].shape)
+    # print("voxels sum", np.sum(example["voxels"]))
+    # print("voxels sum", np.sum(example["voxels"][0,:,:]))
+
     example["image_shape"] = input_dict["image_shape"]
     if "anchors_mask" in example:
         example["anchors_mask"] = example["anchors_mask"].astype(np.uint8)
-
+    
     return example
-

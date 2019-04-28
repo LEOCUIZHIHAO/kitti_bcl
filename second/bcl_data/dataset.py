@@ -8,7 +8,7 @@ import numpy as np
 from second.core import box_np_ops
 #from second.core import preprocess as prep
 #from second.data import kitti_common as kitti
-from second.data.preprocess import _read_and_prep_v9
+from second.bcl_data.preprocess import _read_and_prep_v9
 
 
 class Dataset(object):
@@ -34,7 +34,7 @@ class KittiDataset(Dataset):
             infos = pickle.load(f)
 
         self._root_path = root_path
-        self._kitti_infos = infos[:50]
+        self._kitti_infos = infos
         self._num_point_features = num_point_features
         print("remain number of infos:", len(self._kitti_infos))
         # generate anchors cache
@@ -62,8 +62,7 @@ class KittiDataset(Dataset):
         return self._kitti_infos
 
     def __getitem__(self, idx):
-        # print("I am index : ", idx)
-        # print("[debug] index 29/3", self._kitti_infos[idx]['velodyne_path'])
+
         return _read_and_prep_v9(
             info=self._kitti_infos[idx],
             root_path=self._root_path,

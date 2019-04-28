@@ -24,7 +24,7 @@ that wraps the build function.
 
 from second.protos import input_reader_pb2
 from second.bcl_data.dataset import KittiDataset
-from second.data.preprocess import prep_pointcloud
+from second.bcl_data.preprocess import prep_pointcloud
 import numpy as np
 from second.builder import dbsampler_builder
 from functools import partial
