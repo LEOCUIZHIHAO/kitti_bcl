@@ -4,7 +4,7 @@ from second.protos import pipeline_pb2
 
 import caffe
 from caffe import layers as L, params as P
-from models import caffe_model
+from models import caffe_model, bcl_model
 from solver import solver_function
 
 import shutil
@@ -56,8 +56,11 @@ def caf_model(exp_dir, model_cfg, args, restore):
     eval_proto_path = os.path.join(exp_dir, 'eval.prototxt')
     deploy_proto_path = os.path.join(exp_dir, 'deploy.prototxt')
 
-    train_net = caffe_model.test_v1(phase='train', dataset_params=args, model_cfg=model_cfg)
-    eval_net = caffe_model.test_v1(phase='eval', dataset_params=args, model_cfg=model_cfg)
+    train_net = bcl_model.test_v2(phase='train', dataset_params=args, model_cfg=model_cfg)
+    eval_net = bcl_model.test_v2(phase='eval', dataset_params=args, model_cfg=model_cfg)
+
+    # train_net = caffe_model.test_v1(phase='train', dataset_params=args, model_cfg=model_cfg)
+    # eval_net = caffe_model.test_v1(phase='eval', dataset_params=args, model_cfg=model_cfg)
 
     with open(trian_proto_path, 'w') as f:
         print(train_net, file=f)
@@ -74,29 +77,30 @@ def caf_model(exp_dir, model_cfg, args, restore):
                                            base_lr= 0.0002,
                                            gamma= 0.8, #decay factor
                                            stepsize= 27840, #learning rate decay
-                                           test_iter= 3769, # 10 #number of iterations to use at each testing phase 3769
-                                           test_interval= 9280, # 'test every such iterations' 1856 (test every 5 epoches)
+                                           test_iter= 50, # 10 #number of iterations to use at each testing phase 3769
+                                           test_interval= 50, # 'test every such iterations' 1856 (test every 5 epoches) 9280
                                            max_iter= 296960, # 296960 = 160*1856 #185600
                                            snapshot=1856, # how many steps save a model 9280 (1856*2=3712) save 2 epoches
                                            solver_type='ADAM',
                                            weight_decay= 0.0001, # 0.0001,
                                            iter_size=1, #'number of mini-batches per iteration', batchsize*itersize = real_batch size
-                                           display = 50,
+                                           display = 1,
                                            debug_info=False,
-                                           random_seed=-1,
+                                           random_seed=19930416,
                                            save_path=os.path.join(exp_dir, 'solver.prototxt'))
 
 
-    solver = solver.load_solver()
+    # solver = solver.load_solver()
 
     if restore:
         recent_model = load_recent_model(exp_dir)
         solver.net.copy_from(os.path.join(exp_dir, "{}.caffemodel".format(str(recent_model))))
         solver.restore(os.path.join(exp_dir, "{}.solverstate".format(str(recent_model))))
 
-    solver.solve()
+    # solver.solve()
+    solver.train_model()
 
-def train(config_path, model_dir, restore=True):
+def train(config_path, model_dir, restore=False):
 
     args = {}
     args['config_path'] = config_path

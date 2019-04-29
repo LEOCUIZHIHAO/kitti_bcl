@@ -45,7 +45,63 @@ def deconv_bn_relu(n, name, top_prev, ks, nout, stride=1, pad=0):
 
     return top_prev
 
-def test_v1(phase,
+def bcl_bn_relu(n, name, top_prev, top_lat_feats, nout, lattic_scale=None, loop=1):
+
+    for idx in range(loop):
+
+        if lattic_scale:
+
+            # this method faster than c++
+            # if use python mode ["0*16_1*16_2*16", "0*8_1*8_2*8", "0*2_1*2_2*2"]
+            _lattic_scale = lattic_scale
+            n[str(name)+"_scale_"+str(idx)] = L.Python(top_lat_feats, python_param=dict(module='custom_layers',
+                                                                    layer='PickAndScale',
+                                                                    param_str=_lattic_scale))
+            _top_lat_feats = n[str(name)+"_scale_"+str(idx)]
+
+            #if use c++ mode [16, 8, 2]
+            # _lattic_scale = lattic_scale
+            #
+            # #this method seems very slow
+            # n[str(name)+"_scale_"+str(idx)] = L.PixelFeature(top_lat_feats, pixel_feature_param=dict(type=0, #0 = position
+            #                                                                 pos_scale=_lattic_scale,
+            #                                                                 ))
+            # _top_lat_feats = n[str(name)+"_scale_"+str(idx)]
+
+        else:
+            _top_lat_feats = top_lat_feats
+
+        _nout = nout
+
+        bltr_weight_filler = dict(type='gaussian', std=float(0.001))
+        n[str(name)+"_"+str(idx)] = L.Permutohedral(top_prev, _top_lat_feats, _top_lat_feats,
+                                                        ntop=1,
+                                                        permutohedral_param=dict(
+                                                            num_output=_nout,
+                                                            group=1,
+                                                            neighborhood_size=1,
+                                                            bias_term=True,
+                                                            norm_type=P.Permutohedral.AFTER,
+                                                            offset_type=P.Permutohedral.NONE,
+                                                            filter_filler=bltr_weight_filler,
+                                                            bias_filler=dict(type='constant',
+                                                                             value=0)),
+                                                        param=[{'lr_mult': 1, 'decay_mult': 1},
+                                                               {'lr_mult': 2, 'decay_mult': 0}])
+
+        top_prev = n[str(name)+"_"+str(idx)]
+        n[str(name)+'_bn_'+str(idx)] = L.BatchNorm(top_prev, batch_norm_param=dict(eps=1e-3, moving_average_fraction=0.99))
+        top_prev = n[str(name)+'_bn_'+str(idx)]
+        n[str(name)+'_sc_'+str(idx)] = L.Scale(top_prev, scale_param=dict(bias_term=True))
+        top_prev = n[str(name)+'_sc_'+str(idx)]
+        n[str(name)+'_relu_'+str(idx)] = L.ReLU(top_prev, in_place=True)
+        top_prev = n[str(name)+'_relu_'+str(idx)]
+
+        _top_lat_feats
+
+    return top_prev
+
+def test_v2(phase,
             dataset_params=None,
             model_cfg = None,
             deploy=False,
@@ -71,7 +127,7 @@ def test_v1(phase,
         dataset_params_train['subset'] = phase
 
         datalayer_train = L.Python(name='data', include=dict(phase=caffe.TRAIN),
-                                   ntop= 4, python_param=dict(module='custom_layers', layer='InputKittiData',
+                                   ntop= 4, python_param=dict(module='bcl_layers', layer='InputKittiData',
                                                      param_str=repr(dataset_params_train)))
 
         n.data, n.coors, n.labels, n.reg_targets = datalayer_train
@@ -81,7 +137,7 @@ def test_v1(phase,
         dataset_params_eval['subset'] = phase
 
         datalayer_eval = L.Python(name='data', include=dict(phase=caffe.TEST),
-                                  ntop= 9, python_param=dict(module='custom_layers', layer='InputKittiData',
+                                  ntop= 9, python_param=dict(module='bcl_layers', layer='InputKittiData',
                                                      param_str=repr(dataset_params_eval)))
 
         n.data, n.coors, n.anchors, n.rect, n.trv2c, n.p2, n.anchors_mask, n.img_idx, n.img_shape = datalayer_eval
@@ -93,14 +149,31 @@ def test_v1(phase,
         # n.reg_targets = L.Input(shape=dict(dim=[1, len(input_dims), 1, sample_size]))
 
 
-    # top_prev = L.Reshape(n.data, reshape_param=dict(shape=dict(dim=[0, 0, 1, -1])))
-    #
-    # n['conv' + str(idx)], top_lattice = L.Permutohedral(top_prev, top_data_lattice, top_data_lattice,
-    #                                                     ntop=2,
+    top_prev = conv_bn_relu(n, "mlp", n.data, 1, 64, stride=1, pad=0, loop=1)
+
+    n['max_pool'] = L.Pooling(top_prev, pooling_param = dict(kernel_h=1, kernel_w=100, stride=1, pad=0,
+                                        pool = caffe.params.Pooling.MAX)) #(1,64,voxel,1)
+    top_prev = n['max_pool']
+
+    n['PillarScatter'], n['PillarCoord'] = L.Python(top_prev, n.coors, ntop=2,python_param=dict(
+                                                                    module='bcl_layers',
+                                                                    layer='PointPillarsScatter',
+                                                                    param_str=str(dict(output_shape=[1, 1, 496, 432, 64],
+                                                                                    ))))
+    top_prev, top_lat_feats = n['PillarScatter'], n['PillarCoord']
+
+    # n['reshape_top_prev_1'] = L.Reshape(top_prev, reshape_param=dict(shape=dict(dim=[0, 0, -1, 100])))
+    # top_prev = n['reshape_top_prev_1']
+    # n['reshape_top_lat_feats_1'] = L.Reshape(top_lat_feats, reshape_param=dict(shape=dict(dim=[0, 0, -1, 100])))
+    # top_prev = n['reshape_top_lat_feats_1']
+
+    # bltr_weight_filler = dict(type='gaussian', std=float(0.001))
+    # n['permu' + str(1)] = L.Permutohedral(top_prev, p_coords, p_coords,
+    #                                                     ntop=1,
     #                                                     permutohedral_param=dict(
-    #                                                         num_output=n_out,
+    #                                                         num_output=64,
     #                                                         group=1,
-    #                                                         neighborhood_size=bilateral_nbr,
+    #                                                         neighborhood_size=1,
     #                                                         bias_term=True,
     #                                                         norm_type=P.Permutohedral.AFTER,
     #                                                         offset_type=P.Permutohedral.NONE,
@@ -109,38 +182,47 @@ def test_v1(phase,
     #                                                                          value=0)),
     #                                                     param=[{'lr_mult': 1, 'decay_mult': 1},
     #                                                            {'lr_mult': 2, 'decay_mult': 0}])
+    #
+    # top_prev = n['permu' + str(1)]
 
-    top_prev = conv_bn_relu(n, "mlp", n.data, 1, 64, stride=1, pad=0, loop=1)
+    top_prev = bcl_bn_relu(n, 'bcl1', top_prev, top_lat_feats, nout=64, lattic_scale="0*0.5_1*0.5_2*0.5", loop=1)
 
-    n['max_pool'] = L.Pooling(top_prev, pooling_param = dict(kernel_h=1, kernel_w=100, stride=1, pad=0,
-                                        pool = caffe.params.Pooling.MAX)) #(1,64,voxel,1)
-    top_prev = n['max_pool']
-
-    n['PillarScatter'] = L.Python(top_prev, n.coors, python_param=dict(
-                                                module='custom_layers',
-                                                layer='PointPillarsScatter',
-                                                param_str=str(dict(output_shape=[1, 1, 496, 432, 64],
-                                                                ))))
-    top_prev = n['PillarScatter']
-
+    # n['reshape_data_2'] = L.Reshape(top_prev, reshape_param=dict(shape=dict(dim=[0, 0, -1, 100])))
+    # top_prev = n['reshape_data_2']
 
     top_prev = conv_bn_relu(n, "ini_conv1", top_prev, 3, num_filters[0], stride=layer_strides[0], pad=1, loop=1)
 
-    top_prev = conv_bn_relu(n, "rpn_conv1", top_prev, 3, num_filters[0], stride=1, pad=1, loop=3)
+    # top_prev = conv_bn_relu(n, "rpn_conv1", top_prev, 3, num_filters[0], stride=1, pad=1, loop=3)
+    n['max_pool2'] = L.Pooling(top_lat_feats, pooling_param = dict(kernel_size=3, stride=layer_strides[0], pad=1, round_mode=1, #1 = floor
+                                    engine=2,pool = caffe.params.Pooling.AVE)) #(1,3,h,w)
+    top_lat_feats = n['max_pool2']
+    top_prev = bcl_bn_relu(n, 'bcl1', top_prev, top_lat_feats, nout=64, lattic_scale=None, loop=1)
 
     deconv1 = deconv_bn_relu(n, "rpn_deconv1", top_prev, upsample_strides[0], num_upsample_filters[0], stride=upsample_strides[0], pad=0)
+
+
 
 
     top_prev = conv_bn_relu(n, "ini_conv2", top_prev, 3, num_filters[1], stride=layer_strides[1], pad=1, loop=1)
 
     top_prev = conv_bn_relu(n, "rpn_conv2", top_prev, 3, num_filters[1], stride=1, pad=1, loop=3)
+    # n['max_pool'] = L.Pooling(top_lat_feats, pooling_param = dict(kernel_size=3, stride=1, pad=1,
+    #                                     pool = caffe.params.Pooling.AVE)) #(1,3,h,w)
+    # top_lat_feats = n['max_pool']
+    # top_prev = bcl_bn_relu(n, 'bcl1', top_prev, top_lat_feats, nout=64, lattic_scale="0*16_1*16_2*16", loop=1)
 
     deconv2 = deconv_bn_relu(n, "rpn_deconv2", top_prev, upsample_strides[1], num_upsample_filters[1], stride=upsample_strides[1], pad=0)
+
+
 
 
     top_prev = conv_bn_relu(n, "ini_conv3", top_prev, 3, num_filters[2], stride=layer_strides[2], pad=1, loop=1)
 
     top_prev = conv_bn_relu(n, "rpn_conv3", top_prev, 3, num_filters[2], stride=1, pad=1, loop=3)
+    # n['max_pool'] = L.Pooling(top_lat_feats, pooling_param = dict(kernel_size=3, stride=1, pad=1,
+    #                                     pool = caffe.params.Pooling.AVE)) #(1,3,h,w)
+    # top_lat_feats = n['max_pool']
+    # top_prev = bcl_bn_relu(n, 'bcl1', top_prev, top_lat_feats, nout=64, lattic_scale="0*16_1*16_2*16", loop=1)
 
     deconv3 = deconv_bn_relu(n, "rpn_deconv3", top_prev, upsample_strides[2], num_upsample_filters[2], stride=upsample_strides[2], pad=0)
 
@@ -159,6 +241,7 @@ def test_v1(phase,
                                                 engine=1,
                                                 ),
                          param=[dict(lr_mult=1), dict(lr_mult=1)])
+    # top_prev = bcl_bn_relu(n, 'bcl1', top_prev, top_lat_feats, nout=64, lattic_scale="0*16_1*16_2*16", loop=1)
     cls_preds = n['cls_preds']
 
 
@@ -173,7 +256,7 @@ def test_v1(phase,
                                                  engine=1,
                                                  ),
                           param=[dict(lr_mult=1), dict(lr_mult=1)])
-
+    # top_prev = bcl_bn_relu(n, 'bcl1', top_prev, top_lat_feats, nout=64, lattic_scale="0*16_1*16_2*16", loop=1)
     box_preds = n['box_preds']
 
     if phase == "train":
@@ -182,7 +265,7 @@ def test_v1(phase,
                                                                         name = "PrepareLossWeight",
                                                                         ntop = 3,
                                                                         python_param=dict(
-                                                                                    module='custom_layers',
+                                                                                    module='bcl_layers',
                                                                                     layer='PrepareLossWeight'
                                                                                     ))
         reg_outside_weights, cared, cls_weights = n['reg_outside_weights'], n['cared'], n['cls_weights']
@@ -191,7 +274,7 @@ def test_v1(phase,
         n['labels_input'] = L.Python(n.labels, cared,
                             name = "Label_Encode",
                             python_param=dict(
-                                        module='custom_layers',
+                                        module='bcl_layers',
                                         layer='LabelEncode',
                                         ))
         labels_input = n['labels_input']
@@ -207,7 +290,7 @@ def test_v1(phase,
                                 name = "FocalLoss",
                                 loss_weight = 1,
                                 python_param=dict(
-                                            module='custom_layers',
+                                            module='bcl_layers',
                                             layer='WeightFocalLoss'
                                             ),
                                 param_str=str(dict(focusing_parameter=2, alpha=0.25)))
@@ -222,25 +305,25 @@ def test_v1(phase,
                                 name = "WeightedSmoothL1Loss",
                                 loss_weight = 1,
                                 python_param=dict(
-                                            module='custom_layers',
+                                            module='bcl_layers',
                                             layer='WeightedSmoothL1Loss'
                                             ))
 
         return n.to_proto()
 
     elif phase == "eval":
-
-        n['iou'] = L.Python(box_preds,
-                            cls_preds,
-                            n.anchors, n.rect,
-                            n.trv2c, n.p2, n.anchors_mask,
-                            n.img_idx, n.img_shape,
-                            name = "EvalLayer",
-                            python_param=dict(
-                            module='custom_layers',
-                            layer='EvalLayer_v2',
-                            param_str=repr(dataset_params_eval),
-                            ))
+        #,n['m7'],n['h7'],n['e5'],n['m5'],n['h5']
+        n['e7'],n['m7'],n['h7'],n['e5'],n['m5'],n['h5']=L.Python(box_preds,cls_preds,
+                                                    n.anchors, n.rect,
+                                                    n.trv2c, n.p2, n.anchors_mask,
+                                                    n.img_idx, n.img_shape,
+                                                    name = "EvalLayer",
+                                                    ntop=6,
+                                                    python_param=dict(
+                                                    module='bcl_layers',
+                                                    layer='EvalLayer_v2',
+                                                    param_str=repr(dataset_params_eval),
+                                                    ))
 
 
         return n.to_proto()
