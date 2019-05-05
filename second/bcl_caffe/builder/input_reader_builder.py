@@ -6,6 +6,7 @@ from second.protos import input_reader_pb2
 def build(input_reader_config,
           model_config,
           training,
+          shuffle,
           voxel_generator,
           target_assigner=None):
     """Builds a tensor dictionary based on the InputReader config.
@@ -24,7 +25,7 @@ def build(input_reader_config,
         raise ValueError('input_reader_config not of type '
                          'input_reader_pb2.InputReader.')
     dataset = dataset_builder.build(input_reader_config, model_config,
-                                    training, voxel_generator, target_assigner)
+                                    training, shuffle, voxel_generator, target_assigner)
 
     return dataset
 

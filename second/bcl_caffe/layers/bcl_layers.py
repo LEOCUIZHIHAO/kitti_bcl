@@ -3,7 +3,8 @@ import caffe
 import pathlib
 import shutil
 import timeit
-import numba
+import numpy_indexed as npi
+
 from second.bcl_caffe.utils import get_paddings_indicator_caffe
 from second.builder import target_assigner_builder, voxel_builder
 from second.bcl_caffe.builder import input_reader_builder, box_coder_builder_caffe
@@ -13,7 +14,7 @@ from second.pytorch.core import box_torch_ops #for torch
 from second.pytorch.builder import box_coder_builder
 
 from second.utils.eval import get_coco_eval_result, get_official_eval_result
-import second.data.kitti_common as kitti
+import second.bcl_data.kitti_common as kitti
 
 from second.protos import pipeline_pb2
 from google.protobuf import text_format #make prototxt work
@@ -22,10 +23,6 @@ from enum import Enum
 
 import torch
 import torch.utils.data
-import gc
-
-# import time
-# from functools import partial
 
 class LossNormType(Enum):
     NormByNumPositives = "norm_by_num_positives"
@@ -43,7 +40,16 @@ class InputKittiData(caffe.Layer):
         self.config_path = params['config_path']
         self.batch_size = params['batch_size']
         self.phase = params['subset']
+        self.FeatureNet = params['FeatureNet']
+        self.x2BCL = params['x2BCL']
+        self.save_img = params['Save_Img']
+        self.Voxel2BCL_numpoint = params['Voxel2BCL_numpoint']
         self.example_batch = []
+
+        ###################Save image and mean points###########################
+        if self.save_img == True:
+            img_dir = pathlib.Path(self.model_dir+"/img")
+            img_dir.mkdir(parents=True, exist_ok=True)
 
         # ########################################################################
         ## TODO:  pass by param
@@ -54,37 +60,59 @@ class InputKittiData(caffe.Layer):
         self.x_offset = self.vx / 2 + point_cloud_range[0]
         self.y_offset = self.vy / 2 + point_cloud_range[1]
 
-        #shuffle index
-        # self.index_list = np.arange(3712)
-        # np.random.shuffle(self.index_list)
-        # self.iter = iter(self.index_list)
         self.cfg = self.load_config()
-        self.data = iter(self.load_data(self.cfg))
+        self.data = self.load_dataiter(self.cfg)
 
         for _ in range(self.batch_size):
-            # index = self.index_list[next(self.iter, None)]
-            # if index == None:
-            #     np.random.shuffle(self.index_list)
-            #     self.iter = iter(self.index_list)
-            #     index = self.index_list[next(self.iter)]
+
             example = next(self.data)
             self.example_batch.append(example)
 
         example = self.merge_second_batch(self.example_batch)
-        # example = np.load("./pillar_data.npy").item() ## DEBUG:
-        ########################################################################
-
         self.example_batch = [] #reset example_batch
+
+        ########################################################################
         voxels = example['voxels']
         coors = example['coordinates']
         num_points = example['num_points']
 
-        features = self.PillarFeatureNet(voxels, coors, num_points)
+        if self.x2BCL=="Voxel2BCL":
+            if self.FeatureNet == 'SimpleVoxel':
+                # 1.6e-4s runing time
+                voxels= self.SimpleVoxel(voxels, coors, num_points) #(V,100,C) -> (V,1,C)
+                if self.save_img:
+                    np.save(self.model_dir+"/img/voxel_mean_id{}.npy".format(example['image_idx']),np.squeeze(voxels))
+            elif self.FeatureNet == 'VoxelFeatureNet':
+                # 1e-3s runing time
+                voxels = self.VoxelFeatureNet(voxels, coors, num_points) #(V,N,C) -> (1,C,V,N) here N=100
+            elif self.FeatureNet == 'VoxelFeatureNetV2':
+                # 8e-4s runing time
+                voxels = self.VoxelFeatureNetV2(voxels, coors, num_points) #(V,N,C) -> (1,C,V,N) here N=100
+            elif self.FeatureNet == False:
+                voxels = np.expand_dims(voxels, axis=0)
+                voxels = voxels.transpose(0,3,1,2)
 
-        self.data = iter(self.load_data(self.cfg))
+            voxels, coors, num_points = self.Voxel3DStack2D(voxels, coors, num_points)
+            voxels, coors = self.PermutohedralContainer(voxels,
+                                                        coors,
+                                                        num_points,
+                                                        max_voxels=self.Voxel2BCL_numpoint,
+                                                        ) #xyzr + zcoord (New Dims)
+            voxels = voxels.transpose()
+            voxels = np.expand_dims(voxels, 0)
+            voxels = np.expand_dims(voxels, -1)
 
-        top[0].reshape(*features.shape) #[1,9,7000,100]
-        top[1].reshape(*coors.shape) #[7000,4]
+        elif self.x2BCL=="Voxel2PointNet":
+            if self.FeatureNet == 'SimpleVoxel':
+                voxels = self.SimpleVoxel(voxels, coors, num_points) #(V,100,C) -> (V,1,C)
+
+                voxels = voxels.transpose(2,0,1)
+                voxels = np.expand_dims(voxels, 0)
+
+        top[0].reshape(*voxels.shape)
+        top[1].reshape(*coors.shape)
+
+        self.data = self.load_dataiter(self.cfg)
 
         if self.phase == 'train':
             labels = example['labels']
@@ -117,35 +145,66 @@ class InputKittiData(caffe.Layer):
 
     def forward(self, bottom, top):
         for _ in range(self.batch_size):
-            # index = self.index_list[next(self.iter, None)]
-            # if index == None:cfg = dict(input_cfg=input_cfg)
-            #     np.random.shuffle(self.index_list)
-            #     self.iter = iter(self.index_list)
-            #     index = self.index_list[next(self.iter)]
+            #takes 7e-4 s
+            # start_time = timeit.default_timer()
             try:
                 example = next(self.data)
             except StopIteration:
-                print("[info]>>>>>>>>>>>>>>>>>>> start a new epoch for {} data ".format(self.phase))
-                # self.data = iter(self.load_data())
-                self.data = iter(self.load_data(self.cfg))
+                print("\n[info] start a new epoch for {} data\n".format(self.phase))
+                self.data = self.load_dataiter(self.cfg)
                 example = next(self.data)
-
+            # end_time = timeit.default_timer()
+            # print('WeightFocalLoss ran for {}s'.format((end_time-start_time)/60))
             self.example_batch.append(example)
 
         example = self.merge_second_batch(self.example_batch)
-        # example = np.load("./pillar_data.npy").item() ## DEBUG:
-
         self.example_batch = [] #reset example_batch
-        voxels = example['voxels']
-        coors = example['coordinates']
-        num_points = example['num_points']
 
-        features = self.PillarFeatureNet(voxels, coors, num_points)
+        voxels = example['voxels'] #(V,NPints,4)
+        coors = example['coordinates'] #(V,4) bzyz
+        num_points = example['num_points'] #(V,)
 
-        top[0].reshape(*features.shape) #[1,9,7000,100]
-        top[1].reshape(*coors.shape) #[7000,4]
-        top[0].data[...] = features
-        top[1].data[...] = coors
+        # print("coords type : ", type(coors[1,1]))
+
+        if self.save_img:
+            np.save(self.model_dir+"/img/voxel_id{}.npy".format(example['image_idx']), voxels)
+
+        if self.x2BCL=="Voxel2BCL":
+
+            #takes 1e-4 s
+            # start_time = timeit.default_timer()
+            if self.FeatureNet == 'SimpleVoxel':
+                # 1.6e-4s runing time
+                voxels= self.SimpleVoxel(voxels, coors, num_points) #(V,100,C) -> (V,1,C)
+                if self.save_img:
+                    np.save(self.model_dir+"/img/voxel_mean_id{}.npy".format(example['image_idx']),np.squeeze(voxels))
+            elif self.FeatureNet == 'VoxelFeatureNet':
+                # 1e-3s runing time
+                voxels = self.VoxelFeatureNet(voxels, coors, num_points) #(V,N,C) -> (1,C,V,N) here N=100
+            elif self.FeatureNet == 'VoxelFeatureNetV2':
+                # 8e-4s runing time
+                voxels = self.VoxelFeatureNetV2(voxels, coors, num_points) #(V,N,C) -> (1,C,V,N) here N=100
+            elif self.FeatureNet == False:
+                voxels = np.expand_dims(voxels, axis=0)
+                voxels = voxels.transpose(0,3,1,2)
+
+            voxels, coors, num_points = self.Voxel3DStack2D(voxels, coors, num_points)
+            voxels, coors = self.PermutohedralContainer(voxels,
+                                                        coors,
+                                                        num_points,
+                                                        max_voxels=self.Voxel2BCL_numpoint,
+                                                        ) #xyzr + zcoord (New Dims)
+
+            voxels = voxels.transpose()
+            voxels = np.expand_dims(voxels, 0)
+            voxels = np.expand_dims(voxels, -1)
+
+            # end_time = timeit.default_timer()
+
+            top[0].reshape(*voxels.shape)
+            top[1].reshape(*coors.shape)
+            top[0].data[...] = voxels
+            top[1].data[...] = coors
 
         if self.phase == 'train':
             labels = example['labels']
@@ -223,7 +282,7 @@ class InputKittiData(caffe.Layer):
 
         return (input_cfg, eval_input_cfg, model_cfg, voxel_generator, target_assigner)
 
-    def load_data(self, cfg):
+    def load_dataiter(self, cfg, train_shuffle=False):
 
         input_cfg, eval_input_cfg, model_cfg, \
             voxel_generator, target_assigner = cfg[0],cfg[1],cfg[2],cfg[3],cfg[4]
@@ -233,9 +292,11 @@ class InputKittiData(caffe.Layer):
                 input_cfg,
                 model_cfg,
                 training=True,
+                shuffle=True, #default is false
                 voxel_generator=voxel_generator,
                 target_assigner=target_assigner)
 
+            dataset = iter(dataset)
             return dataset
 
         elif self.phase == 'eval':
@@ -243,18 +304,39 @@ class InputKittiData(caffe.Layer):
                 eval_input_cfg,
                 model_cfg,
                 training=False,
+                shuffle=False,
                 voxel_generator=voxel_generator,
                 target_assigner=target_assigner)
 
+            eval_dataset = iter(eval_dataset)
             return eval_dataset
 
         else:
             raise ValueError
 
-    def PillarFeatureNet(self, voxels, coors, num_points):
+    def PermutohedralContainer(self, voxels, coors, num_points, max_voxels):
+
+        voxels_features = voxels.shape[-1]
+        coors_features = coors.shape[-1]
+        ranking_voxels = np.argsort(num_points)[::-1] #in descending order
+        voxels = voxels[ranking_voxels,:][:max_voxels]
+        coors = coors[ranking_voxels,:][:max_voxels]
+
+        if len(voxels) <= max_voxels:
+            gap = max_voxels - len(voxels)
+            voxels_filler = np.zeros(shape=(gap, voxels_features))
+            coors_filler = np.zeros(shape=(gap, coors_features))
+            num_points_filler = np.zeros(shape=(gap,))
+            voxels = np.concatenate((voxels, voxels_filler), 0)
+            coors = np.concatenate((coors, coors_filler), 0)
+
+        return voxels, coors
+
+    def VoxelFeatureNet(self, voxels, coors, num_points):
         #for permutohedral may not need extrat featuers
-        """
-        points_mean = np.sum(voxels[:, :, :3], axis=1, keepdims=True) / num_points.reshape(-1,1,1)
+
+        # points_mean = np.sum(voxels[:, :, :3], axis=1, keepdims=True) / num_points.reshape(-1,1,1)
+        points_mean = np.sum(voxels[:, :, :3], axis=1, keepdims=True) / (num_points.reshape(-1,1,1)+1e-5) #if fixe BCL container before Scatter
         f_cluster = voxels[:, :, :3] - points_mean
 
         # Find distance of x, y, and z from pillar center
@@ -263,14 +345,11 @@ class InputKittiData(caffe.Layer):
         f_center[:, :, 1] = f_center[:, :, 1] - (np.expand_dims(coors[:, 2].astype(float), axis=1) * self.vy + self.y_offset)
 
         features_ls = [voxels, f_cluster, f_center]
-        features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
-        """
 
-        features = voxels
+        features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
 
         # The feature decorations were calculated without regard to whether pillar was empty. Need to ensure that
         # empty pillars remain set to zeros.
-
         points_per_voxels = features.shape[1]
         mask = get_paddings_indicator_caffe(num_points, points_per_voxels, axis=0)
         mask = np.expand_dims(mask, axis=-1)
@@ -281,6 +360,63 @@ class InputKittiData(caffe.Layer):
         features = features.transpose(0,3,1,2)
 
         return features
+
+    def VoxelFeatureNetV2(self, voxels, coors, num_points):
+
+        # points_mean = np.sum(voxels[:, :, :3], axis=1, keepdims=True) / num_points.reshape(-1,1,1)
+        points_mean = np.sum(voxels[:, :, :3], axis=1, keepdims=True) / (num_points.reshape(-1,1,1)+1e-5) #if fixe BCL container before Scatter
+        f_cluster = voxels[:, :, :3] - points_mean
+
+        features_ls = [voxels, f_cluster]
+
+        features = np.concatenate(features_ls, axis=-1) #[num_voxles, points_num, features]
+
+        # The feature decorations were calculated without regard to whether pillar was empty. Need to ensure that
+        # empty pillars remain set to zeros.
+        points_per_voxels = features.shape[1]
+        mask = get_paddings_indicator_caffe(num_points, points_per_voxels, axis=0)
+        mask = np.expand_dims(mask, axis=-1)
+        features *= mask
+
+        #(voxel, npoint, channel) -> (channel, voxels, npoints)
+        features = np.expand_dims(features, axis=0)
+        features = features.transpose(0,3,1,2)
+
+        return features
+
+    def SimpleVoxel(self, voxels, coors, num_points):
+        #for permutohedral may not need extrat featuers
+        # points_mean = np.sum(voxels[:, :, :], axis=1, keepdims=True) / (num_points.reshape(-1,1,1)+1e-5) #zyxr if fixed container add 1e-5
+        points_mean = np.sum(voxels[:, :, :], axis=1, keepdims=True) / (num_points.reshape(-1,1,1))
+
+        #(voxel, npoint, channel) -> (batch, channel, voxels, npoints) npoints=1
+        # points_mean = np.expand_dims(points_mean, axis=0)
+        # points_mean = points_mean.transpose(0,3,1,2)
+
+        return points_mean
+
+    def Voxel3DStack2D(self, voxels_3d, coors_3d, num_points):
+
+        # print("coors_3d shape", coors_3d.shape)
+        # print("coors_3d input",coors_3d)
+        voxels_3d = np.squeeze(voxels_3d)
+        # print("z axis feature",coors_3d[:,1:2])
+        # print("z axis feature shape",coors_3d[:,1:2].shape)
+        voxels_3d = np.concatenate((voxels_3d,coors_3d[:,1:2]), axis=1) #zyx+Zcoord
+        # print("deleted z axis in coords",np.delete(coors_3d, obj=1, axis=1))
+        coords_xy = np.delete(coors_3d, obj=1, axis=1)
+        _coors, voxels_3d = npi.group_by(coords_xy).mean(voxels_3d) #z will disapear
+        _, num_points = npi.group_by(coords_xy).sum(num_points)
+        coord_z = np.round(voxels_3d[:,-1:]).T # round to near even number
+        # print(coord_z.shape)
+        # _coors = np.concatenate((coord_z, _coors[:,:]), axis=1) #zbyx
+        _coors = np.insert(_coors, obj=1, values=coord_z, axis=1)
+        # print("NEW coors_3d shape", _coors.shape)
+        # print("NEW coors_3d input",_coors)
+        # print("NEW voxels_3d shape ", voxels_3d.shape)
+        # print("NEW voxels_3d ", voxels_3d)
+
+        return voxels_3d, _coors, num_points
 
     def merge_second_batch(self, batch_list):
         example_merged = defaultdict(list)
@@ -316,6 +452,7 @@ class PointPillarsScatter(caffe.Layer):
 
         param = eval(self.param_str)
         output_shape = param['output_shape']
+        self.permutohedral = param['permutohedral']
 
         self.ny = output_shape[2]
         self.nx = output_shape[3]
@@ -327,38 +464,12 @@ class PointPillarsScatter(caffe.Layer):
         voxel_features = np.squeeze(voxel_features) #(1, 64, voxel, 1) -> (64,Voxel)
         coords = bottom[1].data # reverse_index is True, output coordinates will be zyx format
 
-        batch_canvas = []
-        batch_canvas_coords = []
-        for batch_itt in range(self.batch_size):
-            # Create the canvas for this sample
-            canvas = np.zeros(shape=(self.nchannels, self.nx * self.ny))
-            canvas_coords = np.zeros(shape=(self.coords_nchannels, self.nx * self.ny)) #for coords canvas
 
-            # Only include non-empty pillars
-            batch_mask = coords[:, 0] == batch_itt
-            this_coords = coords[batch_mask, :]
-            indices = this_coords[:, 2] * self.nx + this_coords[:, 3]
-            indices = indices.astype(int)
-            voxels = voxel_features[:, batch_mask]
-
-            # Now scatter the blob back to the canvas.
-            canvas[:, indices] = voxels
-            canvas_coords[:, indices] = this_coords.transpose()[1:,:][::-1,:] #need to be xyz!
-
-            # Append to a list for later stacking.
-            batch_canvas.append(canvas)
-            batch_canvas_coords.append(canvas_coords)
-
-        # Stack to 3-dim tensor (batch-size, nchannels, nrows*ncols)
-        batch_canvas = np.stack(batch_canvas, 0)
-        batch_canvas_coords = np.stack(batch_canvas_coords, 0)
-
-        # Undo the column stacking to final 4-dim tensor
-        batch_canvas = batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
-        batch_canvas_coords = batch_canvas_coords.reshape(self.batch_size, self.coords_nchannels, self.ny, self.nx)
+        batch_canvas, _ = self.ScatterNet(voxel_features, coords,
+                                                self.nchannels, self.nx, self.ny)
 
         top[0].reshape(*batch_canvas.shape)
-        top[1].reshape(*batch_canvas_coords.shape)
+        # top[1].reshape(*batch_canvas_coords.shape)
 
     def reshape(self, bottom, top):
         pass
@@ -369,43 +480,64 @@ class PointPillarsScatter(caffe.Layer):
         voxel_features = np.squeeze(voxel_features) #(1, 64, -1, 1) -> (64,-1)
         coords = bottom[1].data
 
+        # runing time ~ 4e-5s
+        # start_time = timeit.default_timer()
+        batch_canvas, self.indices = self.ScatterNet(voxel_features, coords,
+                                                self.nchannels, self.nx, self.ny)
+
+        # end_time = timeit.default_timer()
+        # print('PointPillarsScatter ran for {}s'.format((end_time-start_time)/60))
+
+        top[0].data[...] = batch_canvas
+        # top[1].data[...] = batch_canvas_coords
+
+    def backward(self, top, propagate_down, bottom):
+        if not self.permutohedral:
+            diff = top[0].diff.reshape(self.batch_size, self.nchannels, self.nx * self.ny)[:,:,self.indices]
+            bottom[0].diff[...] = np.expand_dims(diff, axis=-1)
+        elif self.permutohedral:
+            diff = top[0].diff[:,:,:,self.indices]
+            bottom[0].diff[...] = diff.transpose(0,1,3,2) # (b, c, 1, x*y) -> (b,c,x*y,1)
+
+    def ScatterNet(self, voxel_features, coords, nchannels, feature_map_x, feature_map_y, use_coords_feat=False, permutohedral=False):
+
         batch_canvas = []
-        batch_canvas_coords = []
+        if use_coords_feat:
+            batch_canvas_coords = []
+
         for batch_itt in range(self.batch_size):
-            # Create the canvas for this sample
-            canvas = np.zeros(shape=(self.nchannels, self.nx * self.ny)) #(64,-1)
-            canvas_coords = np.zeros(shape=(self.coords_nchannels, self.nx * self.ny)) #for coords canvas
+
+            canvas = np.zeros(shape=(nchannels, feature_map_x * feature_map_y)) #(nchannels,-1)
+            # canvas_coords = np.zeros(shape=(self.coords_nchannels, self.nx * self.ny)) #for coords canvas
 
             # Only include non-empty pillars
             batch_mask = coords[:, 0] == batch_itt
             this_coords = coords[batch_mask, :]
-            self.indices = this_coords[:, 2] * self.nx + this_coords[:, 3]
-            self.indices = self.indices.astype(int)
+            indices = this_coords[:, 2] * feature_map_x + this_coords[:, 3]
+            indices = indices.astype(int)
             voxels = voxel_features[:, batch_mask]
 
             # Now scatter the blob back to the canvas.
-            canvas[:, self.indices] = voxels
-            canvas_coords[:, self.indices] = this_coords.transpose()[1:,:][::-1,:] #need to be xyz!
+            canvas[:, indices] = voxels
+            # canvas_coords[:, indices] = this_coords.transpose()[1:,:][::-1,:] #need to be xyz!
             # Append to a list for later stacking.
             batch_canvas.append(canvas)
-            batch_canvas_coords.append(canvas_coords)
+            # batch_canvas_coords.append(canvas_coords)
 
         # Stack to 3-dim tensor (batch-size, nchannels, nrows*ncols)
         batch_canvas = np.stack(batch_canvas, 0)
-        batch_canvas_coords = np.stack(batch_canvas_coords, 0)
+        # batch_canvas_coords = np.stack(batch_canvas_coords, 0)
 
         # Undo the column stacking to final 4-dim tensor
-        batch_canvas = batch_canvas.reshape(self.batch_size, self.nchannels, self.ny, self.nx)
-        batch_canvas_coords = batch_canvas_coords.reshape(self.batch_size, self.coords_nchannels, self.ny, self.nx)
+        if not permutohedral:
+            batch_canvas = batch_canvas.reshape(self.batch_size, nchannels, feature_map_y, feature_map_x)
+            # batch_canvas_coords = batch_canvas_coords.reshape(self.batch_size, self.coords_nchannels, self.ny, self.nx)
 
-        batch_canvas_coords
+        elif permutohedral:
+            # (batch-size, nchannels, 1, nrows*ncols) for permutohedral
+            batch_canvas = np.expand_dims(batch_canvas, axis=2)
 
-        top[0].data[...] = batch_canvas
-        top[1].data[...] = batch_canvas_coords
-
-    def backward(self, top, propagate_down, bottom):
-        diff = top[0].diff.reshape(self.batch_size, self.nchannels, self.nx * self.ny)[:,:,self.indices]
-        bottom[0].diff[...] = np.expand_dims(diff, axis=-1)
+        return batch_canvas, indices
 
 class PrepareLossWeight(caffe.Layer):
     def setup(self, bottom, top):
@@ -535,13 +667,15 @@ class WeightFocalLoss(caffe.Layer):
         self.cls_weights = bottom[2].data
         self.cls_weights = np.expand_dims(self.cls_weights,-1)
 
+        # runing time ~ 2.6e-5s
+        # start_time = timeit.default_timer()
+
         self._p_t =  1 / (1 + np.exp(-self._p)) # Compute sigmoid activations
 
         self.first = (1-self.label) * (1-self.alpha) + self.label * self.alpha
 
         self.second = (1-self.label) * ((self._p_t) ** self.gamma) + self.label * ((1 - self._p_t) ** self.gamma)
 
-        # log1p = np.log(np.exp(-np.abs(self._p))+1)
         log1p = np.log1p(np.exp(-np.abs(self._p)))
 
         self.sigmoid_cross_entropy = (1-self.label) * (log1p + np.clip(self._p, a_min=0, a_max=None)) + \
@@ -550,20 +684,28 @@ class WeightFocalLoss(caffe.Layer):
         logprobs = ((1-self.label) * self.first * self.second * self.sigmoid_cross_entropy) + \
                     (self.label * self.first * self.second * self.sigmoid_cross_entropy)
 
+        # end_time = timeit.default_timer()
+        # print('WeightFocalLoss forwards ran for {}s'.format((end_time-start_time)/60))
+
         top[0].data[...] = np.sum(logprobs*self.cls_weights)
 
     def backward(self, top, propagate_down, bottom):
 
-        # dev_log1p = self._p / ((np.exp(np.abs(self._p))+1) * np.abs(self._p)) #derivitive ln(e^(-abs(x) + 1)
+        # runing time ~ 5e-5s
+        start_time = timeit.default_timer()
+
         dev_log1p = np.sign(self._p) * (1 / (np.exp(np.abs(self._p))+1))  # might fix divided by 0 x/|x| bug
 
-        self.dev_sigmoid_cross_entropy =  (1-self.label) * (dev_log1p - np.clip(self._p, a_min=0, a_max=None)/self._p)  + \
-                                            self.label * (dev_log1p + np.clip(self._p, a_min=None, a_max=0)/self._p)
+        self.dev_sigmoid_cross_entropy =  (1-self.label) * (dev_log1p - np.where(self._p<=0, 0, 1))  + \
+                                            self.label * (dev_log1p + np.where(self._p>=0, 0, 1))
 
         delta = (1-self.label) *  (self.first * self.second * (self.gamma * (1-self._p_t) * self.sigmoid_cross_entropy - self.dev_sigmoid_cross_entropy)) + \
             self.label * (-self.first * self.second * (self.gamma * self._p_t * self.sigmoid_cross_entropy + self.dev_sigmoid_cross_entropy))
 
         bottom[0].diff[...] = delta * self.cls_weights
+
+        # end_time = timeit.default_timer()
+        # print('WeightFocalLoss backwards ran for {}s'.format((end_time-start_time)/60))
 
 class WeightedSmoothL1Loss(caffe.Layer):
 
@@ -626,6 +768,597 @@ class WeightedSmoothL1Loss(caffe.Layer):
             delta = np.where(self.cond, (self.sigma**2) * self.diff, np.sign(self.diff))
 
         bottom[0].diff[...] = delta * self.reg_weights * 2
+
+class EvalLayer_v2(caffe.Layer):
+
+    def setup(self, bottom, top):
+
+        params= eval(self.param_str)
+        self.model_dir = params['model_dir']
+        self.config_path = params['config_path']
+
+        self.target_assigner, self.gt_annos = self.load_generator()
+        self._box_coder = self.target_assigner.box_coder
+
+        self._num_class = 1
+        self._use_direction_classifier = False
+        self._use_sigmoid_score = True
+        self._multiclass_nms = False
+        self._nms_score_threshold = 0.05
+        self._nms_pre_max_size = 1000
+        self._nms_post_max_size = 300
+        self._nms_iou_threshold = 0.5
+
+        self.dt_annos = []
+
+    def reshape(self, bottom, top):
+        top[0].reshape(1)
+        top[1].reshape(1)
+        top[2].reshape(1)
+        top[3].reshape(1)
+        top[4].reshape(1)
+        top[5].reshape(1)
+    def forward(self, bottom, top):
+
+        batch_box_preds = torch.from_numpy(bottom[0].data)
+        batch_cls_preds = torch.from_numpy(bottom[1].data)
+
+        batch_box_preds = batch_box_preds.permute(0, 2, 3, 1).contiguous()
+        batch_cls_preds = batch_cls_preds.permute(0, 2, 3, 1).contiguous()
+
+        batch_size = torch.from_numpy(bottom[2].data).shape[0]
+        batch_anchors = torch.from_numpy(bottom[2].data)
+
+        batch_rect = torch.from_numpy(bottom[3].data)
+        batch_Trv2c = torch.from_numpy(bottom[4].data)
+        batch_P2 = torch.from_numpy(bottom[5].data)
+
+        batch_anchors_mask = torch.from_numpy(bottom[6].data)
+        batch_anchors_mask = batch_anchors_mask.type(torch.uint8)
+
+        batch_imgidx = torch.from_numpy(bottom[7].data)
+        self.batch_image_shape = bottom[8].data
+
+        batch_box_preds = batch_box_preds.view(batch_size, -1, self._box_coder.code_size)
+        num_class_with_bg = self._num_class
+
+        batch_cls_preds = batch_cls_preds.view(batch_size, -1, num_class_with_bg)
+        batch_box_preds = self._box_coder.decode_torch(batch_box_preds, batch_anchors)
+
+        if self._use_direction_classifier:
+            batch_dir_preds = preds_dict["dir_cls_preds"]
+            batch_dir_preds = batch_dir_preds.view(batch_size, -1, 2)
+        else:
+            batch_dir_preds = [None] * batch_size
+
+        predictions_dicts = []
+        for box_preds, cls_preds, dir_preds, rect, Trv2c, P2, img_idx, a_mask in zip(
+                batch_box_preds, batch_cls_preds, batch_dir_preds, batch_rect,
+                batch_Trv2c, batch_P2, batch_imgidx, batch_anchors_mask
+        ):
+            if a_mask is not None:
+                box_preds = box_preds[a_mask]
+                cls_preds = cls_preds[a_mask]
+
+            if self._use_direction_classifier:
+                if a_mask is not None:
+                    dir_preds = dir_preds[a_mask]
+                dir_labels = torch.max(dir_preds, dim=-1)[1]
+
+                # this don't support softmax
+
+            assert self._use_sigmoid_score is True
+            total_scores = torch.sigmoid(cls_preds)
+
+            # Apply NMS in birdeye view
+            nms_func = box_torch_ops.nms
+
+            selected_boxes = None
+            selected_labels = None
+            selected_scores = None
+            selected_dir_labels = None
+
+            # get highest score per prediction, than apply nms
+            # to remove overlapped box.
+            if num_class_with_bg == 1:
+                top_scores = total_scores.squeeze(-1)
+                top_labels = torch.zeros(
+                    total_scores.shape[0],
+                    device=total_scores.device,
+                    dtype=torch.long)
+            else:
+                top_scores, top_labels = torch.max(total_scores, dim=-1)
+
+            if self._nms_score_threshold > 0.0:
+                thresh = torch.tensor(
+                    [self._nms_score_threshold],
+                    device=total_scores.device).type_as(total_scores)
+                top_scores_keep = (top_scores >= thresh)
+                top_scores = top_scores.masked_select(top_scores_keep)
+            if top_scores.shape[0] != 0:
+                if self._nms_score_threshold > 0.0:
+                    box_preds = box_preds[top_scores_keep]
+                    if self._use_direction_classifier:
+                        dir_labels = dir_labels[top_scores_keep]
+                    top_labels = top_labels[top_scores_keep]
+                boxes_for_nms = box_preds[:, [0, 1, 3, 4, 6]]
+
+                box_preds_corners = box_torch_ops.center_to_corner_box2d(
+                    boxes_for_nms[:, :2], boxes_for_nms[:, 2:4],
+                    boxes_for_nms[:, 4])
+                boxes_for_nms = box_torch_ops.corner_to_standup_nd(
+                    box_preds_corners)
+
+                selected = nms_func(
+                    boxes_for_nms,
+                    top_scores,
+                    pre_max_size=self._nms_pre_max_size,
+                    post_max_size=self._nms_post_max_size,
+                    iou_threshold=self._nms_iou_threshold,
+                )
+
+            else:
+                selected = None
+
+            if selected is not None:
+                selected_boxes = box_preds[selected]
+                if self._use_direction_classifier:
+                    selected_dir_labels = dir_labels[selected]
+                selected_labels = top_labels[selected]
+                selected_scores = top_scores[selected]
+            # finally generate predictions.
+
+            if selected_boxes is not None:
+                box_preds = selected_boxes
+                scores = selected_scores
+                label_preds = selected_labels
+                if self._use_direction_classifier:
+                    dir_labels = selected_dir_labels
+                    opp_labels = (box_preds[..., -1] > 0) ^ dir_labels.byte()
+                    box_preds[..., -1] += torch.where(
+                        opp_labels,
+                        torch.tensor(np.pi).type_as(box_preds),
+                        torch.tensor(0.0).type_as(box_preds))
+                    # box_preds[..., -1] += (
+                    #     ~(dir_labels.byte())).type_as(box_preds) * np.pi
+                final_box_preds = box_preds
+                final_scores = scores
+                final_labels = label_preds
+                # print("final_label_preds shape", final_labels.shape)
+                final_box_preds_camera = box_torch_ops.box_lidar_to_camera(
+                    final_box_preds, rect, Trv2c)
+                locs = final_box_preds_camera[:, :3]
+                dims = final_box_preds_camera[:, 3:6]
+                angles = final_box_preds_camera[:, 6]
+                camera_box_origin = [0.5, 1.0, 0.5]
+                box_corners = box_torch_ops.center_to_corner_box3d(
+                    locs, dims, angles, camera_box_origin, axis=1)
+                box_corners_in_image = box_torch_ops.project_to_image(
+                    box_corners, P2)
+                # box_corners_in_image: [N, 8, 2]
+                minxy = torch.min(box_corners_in_image, dim=1)[0]
+                maxxy = torch.max(box_corners_in_image, dim=1)[0]
+                # minx = torch.min(box_corners_in_image[..., 0], dim=1)[0]
+                # maxx = torch.max(box_corners_in_image[..., 0], dim=1)[0]
+                # miny = torch.min(box_corners_in_image[..., 1], dim=1)[0]
+                # maxy = torch.max(box_corners_in_image[..., 1], dim=1)[0]
+                # box_2d_preds = torch.stack([minx, miny, maxx, maxy], dim=1)
+                box_2d_preds = torch.cat([minxy, maxxy], dim=1)
+                # predictions
+                predictions_dict = {
+                    "bbox": box_2d_preds,
+                    "box3d_camera": final_box_preds_camera,
+                    "box3d_lidar": final_box_preds,
+                    "scores": final_scores,
+                    "label_preds": label_preds,
+                    "image_idx": img_idx,
+                }
+            else:
+                predictions_dict = {
+                    "bbox": None,
+                    "box3d_camera": None,
+                    "box3d_lidar": None,
+                    "scores": None,
+                    "label_preds": None,
+                    "image_idx": img_idx,
+                }
+            predictions_dicts.append(predictions_dict)
+
+        self.dt_annos += self.predict_kitti_to_anno(predictions_dicts, self.class_names, self.center_limit_range, self.lidar_input)
+
+        if len(self.dt_annos) == len(self.gt_annos):
+
+            ## Log
+            log_path = self.model_dir+'/log.txt'
+            logf = open(log_path, 'a')
+            logf.write("\n")
+
+            print("#################################")
+            print("#################################", file=logf)
+            print("# EVAL")
+            print("# EVAL", file=logf)
+            print("#################################")
+            print("#################################", file=logf)
+            print("Generate output labels...")
+            print("Generate output labels...", file=logf)
+
+            result, mAPbbox, mAPbev, mAP3d, mAPaos = get_official_eval_result(self.gt_annos, self.dt_annos, self.class_names,
+                                                                                  return_data=True)
+            print(result)
+            print(result, file=logf)
+
+            result = get_coco_eval_result(self.gt_annos, self.dt_annos, self.class_names)
+
+            print(result)
+            print(result, file=logf)
+
+            self.dt_annos = []
+
+            logf.close()
+            # print("[info] empty self.dt_annos :> dt.annos len : ", len(self.dt_annos))
+
+            top[0].data[...] = mAP3d[:,0,0] # 0.7 easy
+            top[1].data[...] = mAP3d[:,1,0] # 0.7 moderate
+            top[2].data[...] = mAP3d[:,2,0] # 0.7 hard
+            top[3].data[...] = mAP3d[:,0,1] # 0.7 easy
+            top[4].data[...] = mAP3d[:,1,1] # 0.5 moderate
+            top[5].data[...] = mAP3d[:,2,1] # 0.5 moderate
+
+    def backward(self, top, propagate_down, bottom):
+        pass
+    def load_generator(self):
+
+        model_dir = pathlib.Path(self.model_dir)
+        model_dir.mkdir(parents=True, exist_ok=True)
+
+        config_file_bkp = "pipeline.config"
+        config = pipeline_pb2.TrainEvalPipelineConfig()
+
+        with open(self.config_path, "r") as f:
+            proto_str = f.read()
+            text_format.Merge(proto_str, config)
+        shutil.copyfile(self.config_path, str(model_dir / config_file_bkp))
+
+        input_cfg = config.train_input_reader
+        eval_input_cfg = config.eval_input_reader
+        model_cfg = config.model.second
+        train_cfg = config.train_config
+        ######################
+        # BUILD VOXEL GENERATOR
+        ######################
+        voxel_generator = voxel_builder.build(model_cfg.voxel_generator)
+        ######################
+        # BUILD TARGET ASSIGNER
+        ######################
+        bv_range = voxel_generator.point_cloud_range[[0, 1, 3, 4]]
+        box_coder = box_coder_builder.build(model_cfg.box_coder)
+        target_assigner_cfg = model_cfg.target_assigner
+        target_assigner = target_assigner_builder.build(target_assigner_cfg,
+                                                        bv_range, box_coder)
+
+        #for evaluation
+        self.class_names = list(input_cfg.class_names)
+        self.center_limit_range = model_cfg.post_center_limit_range
+        self.lidar_input = model_cfg.lidar_input
+
+        eval_dataset = input_reader_builder.build(
+            eval_input_cfg,
+            model_cfg,
+            training=False,
+            shuffle=False,
+            voxel_generator=voxel_generator,
+            target_assigner=target_assigner)
+        gt_annos = [
+            info["annos"] for info in eval_dataset.kitti_infos
+        ]
+
+        return target_assigner, gt_annos
+    def predict_kitti_to_anno(self,
+                            predictions_dicts,
+                            class_names,
+                            center_limit_range=None,
+                            lidar_input=False,
+                            global_set=None):
+        annos = []
+        for i, preds_dict in enumerate(predictions_dicts):
+            image_shape = self.batch_image_shape[i]
+            img_idx = preds_dict["image_idx"]
+            if preds_dict["bbox"] is not None:
+                box_2d_preds = preds_dict["bbox"].detach().cpu().numpy()
+                box_preds = preds_dict["box3d_camera"].detach().cpu().numpy()
+                scores = preds_dict["scores"].detach().cpu().numpy()
+                box_preds_lidar = preds_dict["box3d_lidar"].detach().cpu().numpy()
+                # write pred to file
+                label_preds = preds_dict["label_preds"].detach().cpu().numpy()
+                # label_preds = np.zeros([box_2d_preds.shape[0]], dtype=np.int32)
+
+                anno = kitti.get_start_result_anno()
+                num_example = 0
+                for box, box_lidar, bbox, score, label in zip(
+                        box_preds, box_preds_lidar, box_2d_preds, scores,
+                        label_preds):
+                    if not lidar_input:
+                        if bbox[0] > image_shape[1] or bbox[1] > image_shape[0]:
+                            continue
+                        if bbox[2] < 0 or bbox[3] < 0:
+                            continue
+                    # print(img_shape)
+                    if center_limit_range is not None:
+                        limit_range = np.array(center_limit_range)
+                        if (np.any(box_lidar[:3] < limit_range[:3])
+                                or np.any(box_lidar[:3] > limit_range[3:])):
+                            continue
+                    bbox[2:] = np.minimum(bbox[2:], image_shape[::-1])
+                    bbox[:2] = np.maximum(bbox[:2], [0, 0])
+                    anno["name"].append(class_names[int(label)])
+                    anno["truncated"].append(0.0)
+                    anno["occluded"].append(0)
+                    anno["alpha"].append(-np.arctan2(-box_lidar[1], box_lidar[0]) +
+                                         box[6])
+                    anno["bbox"].append(bbox)
+                    anno["dimensions"].append(box[3:6])
+                    anno["location"].append(box[:3])
+                    anno["rotation_y"].append(box[6])
+                    if global_set is not None:
+                        for i in range(100000):
+                            if score in global_set:
+                                score -= 1 / 100000
+                            else:
+                                global_set.add(score)
+                                break
+                    anno["score"].append(score)
+
+                    num_example += 1
+                if num_example != 0:
+                    anno = {n: np.stack(v) for n, v in anno.items()}
+                    annos.append(anno)
+                else:
+                    annos.append(kitti.empty_result_anno())
+            else:
+                annos.append(kitti.empty_result_anno())
+            num_example = annos[-1]["name"].shape[0]
+            annos[-1]["image_idx"] = np.array(
+                [img_idx] * num_example, dtype=np.int64)
+        return annos
+
+class BCLReshape(caffe.Layer):
+
+    def setup(self, bottom, top):
+        param = eval(self.param_str)
+        self.ReshapeMode = param['ReshapeMode']
+
+        if self.ReshapeMode == 'Voxel2BCL':
+            in0 = bottom[0].data #n.data
+            in0 = in0.transpose(0,1,3,2) #(B,C,V,N)->(B,C,N,V)
+
+            in1 = bottom[1].data[:,1:][:,::-1].transpose() #coors in reverse order bzyx (V, C) -> (C,V)
+            in1 = np.expand_dims(in1,0) #(C,V)-> (1,C,V)
+            in1 = np.expand_dims(in1,2) #(1,C,V)-> (1,C,1,V)
+            top[0].reshape(*in0.shape)
+            top[1].reshape(*in1.shape)
+        elif self.ReshapeMode == 'Point2BCL':
+            in0 = bottom[0].data.transpose() #xyzr (V, C) -> (C,V)
+            in0 = np.expand_dims(in0,0) #(C,V)-> (1,C,V)
+            in0 = np.expand_dims(in0,2) #(1,C,V)-> (1,C,1,V)
+
+            in1 = bottom[0].data[:, :-1].transpose() #xyzr (V, C) -> (C,V)
+            in1 = np.expand_dims(in1,0) #(C,V)-> (1,C,V)
+            in1 = np.expand_dims(in1,2) #(1,C,V)-> (1,C,1,V)
+            top[0].reshape(*in0.shape)
+            top[1].reshape(*in1.shape)
+
+    def reshape(self, bottom, top):
+        pass
+    def forward(self, bottom, top):
+
+        if self.ReshapeMode == 'Voxel2BCL':
+            in0 = bottom[0].data #n.data
+            in0 = in0.transpose(0,1,3,2) #(B,C,V,N)->(B,C,N,V)
+            in1 = bottom[1].data[:,1:][:,::-1].transpose() #coors in reverse order bzyx (V, C) -> (C,V)
+            in1 = np.expand_dims(in1,0) #(C,V)-> (1,C,V)
+            in1 = np.expand_dims(in1,2) #(1,C,V)-> (1,C,1,V)
+            top[0].reshape(*in0.shape)
+            top[1].reshape(*in1.shape)
+            top[0].data[...] = in0
+            top[1].data[...] = in1
+        elif self.ReshapeMode == 'Point2BCL':
+            in0 = bottom[0].data.transpose() #xyzr (V, C) -> (C,V)
+            in0 = np.expand_dims(in0,0) #(C,V)-> (1,C,V)
+            in0 = np.expand_dims(in0,2) #(1,C,V)-> (1,C,1,V)
+
+            in1 = bottom[0].data[:, :-1].transpose() #xyzr (V, C) -> (C,V)
+            in1 = np.expand_dims(in1,0) #(C,V)-> (1,C,V)
+            in1 = np.expand_dims(in1,2) #(1,C,V)-> (1,C,1,V)
+            top[0].reshape(*in0.shape)
+            top[1].reshape(*in1.shape)
+            top[0].data[...] = in0
+            top[1].data[...] = in1
+
+    def backward(self, top, propagate_down, bottom):
+        if self.coors_feature:
+            bottom[0].diff[...] = top[0].diff.transpose(0,1,3,2)
+        elif self.data_feature:
+            # bottom[0].diff[...] = np.squeeze(top[0].diff).transpose()
+            pass
+
+class Voxel2Scatter(caffe.Layer):
+
+    def setup(self, bottom, top):
+
+        in0 = bottom[0].data #n.data
+        in0 = in0.transpose(0,1,3,2) #(B,C,N,V)->(B,C,V,N)
+        top[0].reshape(*in0.shape)
+
+    def reshape(self, bottom, top):
+        pass
+    def forward(self, bottom, top):
+
+        in0 = bottom[0].data #n.data #(B,C,N,V)
+        in0 = in0.transpose(0,1,3,2) #(B,C,N,V)->(B,C,V,N)
+        top[0].reshape(*in0.shape)
+        top[0].data[...] = in0
+
+    def backward(self, top, propagate_down, bottom):
+        bottom[0].diff[...] = top[0].diff.transpose(0,1,3,2)
+
+#indicing POint to Voxel
+class Point2Voxel(caffe.Layer):
+    def setup(self, bottom, top):
+        points = bottom[0].data.squeeze().transpose() #n.data
+        self.mask = bottom[1].data
+        self.mask = self.mask.astype(int)
+        print(self.mask.shape)
+        voxel = np.zeros(shape = (*self.mask.shape, points.shape[-1]))
+        voxel = np.expand_dims(voxel.transpose(2,0,1), 0) #(1, c, V, 100)
+        top[0].reshape(*voxel.shape)
+
+    def reshape(self, bottom, top):
+        pass
+
+    def forward(self, bottom, top):
+        points = bottom[0].data.squeeze().transpose() #n.data
+        self.mask = bottom[1].data
+        self.mask = np.array(self.mask, dtype = np.bool_)
+        voxel = np.zeros(shape = (*self.mask.shape, points.shape[-1]))
+        voxel[self.mask,:] = points #(V,100,C)
+        voxel = np.expand_dims(voxel.transpose(2,0,1), 0) #(1, c, V, 100)
+        top[0].reshape(*voxel.shape)
+        top[0].data[...] = voxel
+
+    def backward(self, top, propagate_down, bottom):
+        diff = top[0].diff
+        diff = np.squeeze(diff).transpose(1,2,0)
+        diff = diff[self.mask] #(n, c)
+        diff = np.expand_dims(diff.transpose(), 0) #(1,c,n)
+        diff = np.expand_dims(diff, 2) #(1,c,1,n)
+        bottom[0].diff[...] = diff
+
+class GlobalPooling(caffe.Layer):
+    def setup(self, bottom, top):
+        pass
+
+    def reshape(self, bottom, top):
+        top[0].reshape(*bottom[0].data.shape)
+
+    def forward(self, bottom, top):
+        n, c, h, w = bottom[0].data.shape
+        self.max_loc = bottom[0].data.reshape(n, c, h*w).argmax(axis=2)
+        top[0].data[...] = bottom[0].data.max(axis=(2, 3), keepdims=True)
+
+    def backward(self, top, propagate_down, bottom):
+        n, c, h, w = top[0].diff.shape
+        nn, cc = np.ix_(np.arange(n), np.arange(c))
+        bottom[0].diff[...] = 0
+        bottom[0].diff.reshape(n, c, -1)[nn, cc, self.max_loc] = top[0].diff.sum(axis=(2, 3))
+
+class LogLayer(caffe.Layer):
+
+    def setup(self, bottom, top):
+        in1 = bottom[0].data
+        print("debug print", in1)
+        print("debug print", in1.shape)
+        top[0].reshape(*in1.shape)
+
+    def reshape(self, bottom, top):
+        pass
+    def forward(self, bottom, top):
+        in1 = bottom[0].data
+        print("debug print", in1)
+        print("debug print", in1.shape)
+        top[0].reshape(*in1.shape)
+        top[0].data[...] = in1
+        pass
+
+    def backward(self, top, propagate_down, bottom):
+        # diff = top[0].diff
+        # bottom[0].diff[...]=diff
+        pass
+
+class ProbRenorm(caffe.Layer):
+    def setup(self, bottom, top):
+        pass
+
+    def reshape(self, bottom, top):
+        top[0].reshape(*bottom[0].data.shape)
+
+    def forward(self, bottom, top):
+        clipped = bottom[0].data * bottom[1].data
+        self.sc = 1.0 / (np.sum(clipped, axis=1, keepdims=True) + 1e-10)
+        top[0].data[...] = clipped * self.sc
+
+    def backward(self, top, propagate_down, bottom):
+        bottom[0].diff[...] = top[0].diff * bottom[1].data * self.sc
+
+class Permute(caffe.Layer):
+    def setup(self, bottom, top):
+        self.dims = [int(v) for v in self.param_str.split('_')]
+        self.dims_ind = list(np.argsort(self.dims))
+
+    def reshape(self, bottom, top):
+        old_shape = bottom[0].data.shape
+        new_shape = [old_shape[d] for d in self.dims]
+        top[0].reshape(*new_shape)
+
+    def forward(self, bottom, top):
+        top[0].data[...] = bottom[0].data.transpose(*self.dims)
+
+    def backward(self, top, propagate_down, bottom):
+        bottom[0].diff[...] = top[0].diff.transpose(*self.dims_ind)
+
+class LossHelper(caffe.Layer):
+    def setup(self, bottom, top):
+        self.old_shape = bottom[0].data.shape
+
+    def reshape(self, bottom, top):
+        new_shape = (self.old_shape[0] * self.old_shape[3], self.old_shape[1], 1, 1)
+        top[0].reshape(*new_shape)
+
+    def forward(self, bottom, top):
+        top[0].data[...] = bottom[0].data.transpose(0, 3, 1, 2).reshape(*top[0].data.shape)
+
+    def backward(self, top, propagate_down, bottom):
+        bottom[0].diff[...] = top[0].diff.reshape(self.old_shape[0], self.old_shape[3], self.old_shape[1], 1
+                                                  ).transpose(0, 2, 3, 1)
+
+class LogLoss(caffe.Layer):
+    def setup(self, bottom, top):
+        self.n, self.c, _, self.s = bottom[0].data.shape
+        self.inds = np.ix_(np.arange(self.n), np.arange(self.c), np.arange(1), np.arange(self.s))
+
+    def reshape(self, bottom, top):
+        top[0].reshape(1, 1, 1, 1)
+
+    def forward(self, bottom, top):
+        self.valid = bottom[0].data[self.inds[0], bottom[1].data.astype(int), self.inds[2], self.inds[3]]
+        top[0].data[:] = -np.mean(np.log(self.valid + 1e-10))
+
+    def backward(self, top, propagate_down, bottom):
+        bottom[0].diff[:] = 0.0
+        bottom[0].diff[self.inds[0], bottom[1].data.astype(int), self.inds[2], self.inds[3]] = \
+            -1.0 / ((self.valid + 1e-10) * (self.n * self.s))
+
+class PickAndScale(caffe.Layer):
+    def setup(self, bottom, top):
+        self.nch_out = len(self.param_str.split('_'))
+        self.dims = []
+        for f in self.param_str.split('_'):
+            if f.find('*') >= 0:
+                self.dims.append((int(f[:f.find('*')]), float(f[f.find('*') + 1:])))
+            elif f.find('/') >= 0:
+                self.dims.append((int(f[:f.find('/')]), 1.0 / float(f[f.find('/') + 1:])))
+
+            else:
+                self.dims.append((int(f), 1.0))
+
+    def reshape(self, bottom, top):
+        top[0].reshape(bottom[0].data.shape[0], self.nch_out, bottom[0].data.shape[2], bottom[0].data.shape[3])
+
+    def forward(self, bottom, top):
+        for i, (j, s) in enumerate(self.dims):
+            top[0].data[:, i, :, :] = bottom[0].data[:, j, :, :] * s
+
+    def backward(self, top, propagate_down, bottom):
+        pass  # TODO NOT_YET_IMPLEMENTED
 
 class EvalLayer(caffe.Layer):
 
@@ -999,516 +1732,3 @@ class EvalLayer(caffe.Layer):
             annos[-1]["image_idx"] = np.array(
                 [img_idx] * num_example, dtype=np.int64)
         return annos
-
-class EvalLayer_v2(caffe.Layer):
-
-    def setup(self, bottom, top):
-
-        params= eval(self.param_str)
-        self.model_dir = params['model_dir']
-        self.config_path = params['config_path']
-
-        self.target_assigner, self.gt_annos = self.load_generator()
-        self._box_coder = self.target_assigner.box_coder
-
-        self._num_class = 1
-        self._use_direction_classifier = False
-        self._use_sigmoid_score = True
-        self._multiclass_nms = False
-        self._nms_score_threshold = 0.05
-        self._nms_pre_max_size = 1000
-        self._nms_post_max_size = 300
-        self._nms_iou_threshold = 0.5
-
-        self.dt_annos = []
-
-    def reshape(self, bottom, top):
-        top[0].reshape(1)
-        top[1].reshape(1)
-        top[2].reshape(1)
-        top[3].reshape(1)
-        top[4].reshape(1)
-        top[5].reshape(1)
-    def forward(self, bottom, top):
-
-        batch_box_preds = torch.from_numpy(bottom[0].data)
-        batch_cls_preds = torch.from_numpy(bottom[1].data)
-
-        batch_box_preds = batch_box_preds.permute(0, 2, 3, 1).contiguous()
-        batch_cls_preds = batch_cls_preds.permute(0, 2, 3, 1).contiguous()
-
-        batch_size = torch.from_numpy(bottom[2].data).shape[0]
-        batch_anchors = torch.from_numpy(bottom[2].data)
-
-        batch_rect = torch.from_numpy(bottom[3].data)
-        batch_Trv2c = torch.from_numpy(bottom[4].data)
-        batch_P2 = torch.from_numpy(bottom[5].data)
-
-        batch_anchors_mask = torch.from_numpy(bottom[6].data)
-        batch_anchors_mask = batch_anchors_mask.type(torch.uint8)
-
-        batch_imgidx = torch.from_numpy(bottom[7].data)
-        self.batch_image_shape = bottom[8].data
-
-        batch_box_preds = batch_box_preds.view(batch_size, -1, self._box_coder.code_size)
-        num_class_with_bg = self._num_class
-
-        batch_cls_preds = batch_cls_preds.view(batch_size, -1, num_class_with_bg)
-        batch_box_preds = self._box_coder.decode_torch(batch_box_preds, batch_anchors)
-
-        if self._use_direction_classifier:
-            batch_dir_preds = preds_dict["dir_cls_preds"]
-            batch_dir_preds = batch_dir_preds.view(batch_size, -1, 2)
-        else:
-            batch_dir_preds = [None] * batch_size
-
-        predictions_dicts = []
-        for box_preds, cls_preds, dir_preds, rect, Trv2c, P2, img_idx, a_mask in zip(
-                batch_box_preds, batch_cls_preds, batch_dir_preds, batch_rect,
-                batch_Trv2c, batch_P2, batch_imgidx, batch_anchors_mask
-        ):
-            if a_mask is not None:
-                box_preds = box_preds[a_mask]
-                cls_preds = cls_preds[a_mask]
-
-            if self._use_direction_classifier:
-                if a_mask is not None:
-                    dir_preds = dir_preds[a_mask]
-                dir_labels = torch.max(dir_preds, dim=-1)[1]
-
-                # this don't support softmax
-
-            assert self._use_sigmoid_score is True
-            total_scores = torch.sigmoid(cls_preds)
-
-            # Apply NMS in birdeye view
-            nms_func = box_torch_ops.nms
-
-            selected_boxes = None
-            selected_labels = None
-            selected_scores = None
-            selected_dir_labels = None
-
-            # get highest score per prediction, than apply nms
-            # to remove overlapped box.
-            if num_class_with_bg == 1:
-                top_scores = total_scores.squeeze(-1)
-                top_labels = torch.zeros(
-                    total_scores.shape[0],
-                    device=total_scores.device,
-                    dtype=torch.long)
-            else:
-                top_scores, top_labels = torch.max(total_scores, dim=-1)
-
-            if self._nms_score_threshold > 0.0:
-                thresh = torch.tensor(
-                    [self._nms_score_threshold],
-                    device=total_scores.device).type_as(total_scores)
-                top_scores_keep = (top_scores >= thresh)
-                top_scores = top_scores.masked_select(top_scores_keep)
-            if top_scores.shape[0] != 0:
-                if self._nms_score_threshold > 0.0:
-                    box_preds = box_preds[top_scores_keep]
-                    if self._use_direction_classifier:
-                        dir_labels = dir_labels[top_scores_keep]
-                    top_labels = top_labels[top_scores_keep]
-                boxes_for_nms = box_preds[:, [0, 1, 3, 4, 6]]
-
-                box_preds_corners = box_torch_ops.center_to_corner_box2d(
-                    boxes_for_nms[:, :2], boxes_for_nms[:, 2:4],
-                    boxes_for_nms[:, 4])
-                boxes_for_nms = box_torch_ops.corner_to_standup_nd(
-                    box_preds_corners)
-
-                selected = nms_func(
-                    boxes_for_nms,
-                    top_scores,
-                    pre_max_size=self._nms_pre_max_size,
-                    post_max_size=self._nms_post_max_size,
-                    iou_threshold=self._nms_iou_threshold,
-                )
-
-            else:
-                selected = None
-
-            if selected is not None:
-                selected_boxes = box_preds[selected]
-                if self._use_direction_classifier:
-                    selected_dir_labels = dir_labels[selected]
-                selected_labels = top_labels[selected]
-                selected_scores = top_scores[selected]
-            # finally generate predictions.
-
-            if selected_boxes is not None:
-                box_preds = selected_boxes
-                scores = selected_scores
-                label_preds = selected_labels
-                if self._use_direction_classifier:
-                    dir_labels = selected_dir_labels
-                    opp_labels = (box_preds[..., -1] > 0) ^ dir_labels.byte()
-                    box_preds[..., -1] += torch.where(
-                        opp_labels,
-                        torch.tensor(np.pi).type_as(box_preds),
-                        torch.tensor(0.0).type_as(box_preds))
-                    # box_preds[..., -1] += (
-                    #     ~(dir_labels.byte())).type_as(box_preds) * np.pi
-                final_box_preds = box_preds
-                final_scores = scores
-                final_labels = label_preds
-                # print("final_label_preds shape", final_labels.shape)
-                final_box_preds_camera = box_torch_ops.box_lidar_to_camera(
-                    final_box_preds, rect, Trv2c)
-                locs = final_box_preds_camera[:, :3]
-                dims = final_box_preds_camera[:, 3:6]
-                angles = final_box_preds_camera[:, 6]
-                camera_box_origin = [0.5, 1.0, 0.5]
-                box_corners = box_torch_ops.center_to_corner_box3d(
-                    locs, dims, angles, camera_box_origin, axis=1)
-                box_corners_in_image = box_torch_ops.project_to_image(
-                    box_corners, P2)
-                # box_corners_in_image: [N, 8, 2]
-                minxy = torch.min(box_corners_in_image, dim=1)[0]
-                maxxy = torch.max(box_corners_in_image, dim=1)[0]
-                # minx = torch.min(box_corners_in_image[..., 0], dim=1)[0]
-                # maxx = torch.max(box_corners_in_image[..., 0], dim=1)[0]
-                # miny = torch.min(box_corners_in_image[..., 1], dim=1)[0]
-                # maxy = torch.max(box_corners_in_image[..., 1], dim=1)[0]
-                # box_2d_preds = torch.stack([minx, miny, maxx, maxy], dim=1)
-                box_2d_preds = torch.cat([minxy, maxxy], dim=1)
-                # predictions
-                predictions_dict = {
-                    "bbox": box_2d_preds,
-                    "box3d_camera": final_box_preds_camera,
-                    "box3d_lidar": final_box_preds,
-                    "scores": final_scores,
-                    "label_preds": label_preds,
-                    "image_idx": img_idx,
-                }
-            else:
-                predictions_dict = {
-                    "bbox": None,
-                    "box3d_camera": None,
-                    "box3d_lidar": None,
-                    "scores": None,
-                    "label_preds": None,
-                    "image_idx": img_idx,
-                }
-            predictions_dicts.append(predictions_dict)
-
-        self.dt_annos += self.predict_kitti_to_anno(predictions_dicts, self.class_names, self.center_limit_range, self.lidar_input)
-
-        if len(self.dt_annos) == len(self.gt_annos):
-
-            ## Log
-            log_path = self.model_dir+'/log.txt'
-            logf = open(log_path, 'a')
-            logf.write("\n")
-
-            print("#################################")
-            print("#################################", file=logf)
-            print("# EVAL")
-            print("# EVAL", file=logf)
-            print("#################################")
-            print("#################################", file=logf)
-            print("Generate output labels...")
-            print("Generate output labels...", file=logf)
-
-            result, mAPbbox, mAPbev, mAP3d, mAPaos = get_official_eval_result(self.gt_annos, self.dt_annos, self.class_names,
-                                                                                  return_data=True)
-            print(result)
-            print(result, file=logf)
-
-            result = get_coco_eval_result(self.gt_annos, self.dt_annos, self.class_names)
-
-            print(result)
-            print(result, file=logf)
-
-            self.dt_annos = []
-
-            logf.close()
-            # print("[info] empty self.dt_annos :> dt.annos len : ", len(self.dt_annos))
-
-            top[0].data[...] = mAP3d[:,0,0] # 0.7 easy
-            top[1].data[...] = mAP3d[:,1,0] # 0.7 moderate
-            top[2].data[...] = mAP3d[:,2,0] # 0.7 hard
-            top[3].data[...] = mAP3d[:,0,1] # 0.7 easy
-            top[4].data[...] = mAP3d[:,1,1] # 0.5 moderate
-            top[5].data[...] = mAP3d[:,2,1] # 0.5 moderate
-
-    def backward(self, top, propagate_down, bottom):
-        pass
-    def load_generator(self):
-
-        model_dir = pathlib.Path(self.model_dir)
-        model_dir.mkdir(parents=True, exist_ok=True)
-
-        config_file_bkp = "pipeline.config"
-        config = pipeline_pb2.TrainEvalPipelineConfig()
-
-        with open(self.config_path, "r") as f:
-            proto_str = f.read()
-            text_format.Merge(proto_str, config)
-        shutil.copyfile(self.config_path, str(model_dir / config_file_bkp))
-
-        input_cfg = config.train_input_reader
-        eval_input_cfg = config.eval_input_reader
-        model_cfg = config.model.second
-        train_cfg = config.train_config
-        ######################
-        # BUILD VOXEL GENERATOR
-        ######################
-        voxel_generator = voxel_builder.build(model_cfg.voxel_generator)
-        ######################
-        # BUILD TARGET ASSIGNER
-        ######################
-        bv_range = voxel_generator.point_cloud_range[[0, 1, 3, 4]]
-        box_coder = box_coder_builder.build(model_cfg.box_coder)
-        target_assigner_cfg = model_cfg.target_assigner
-        target_assigner = target_assigner_builder.build(target_assigner_cfg,
-                                                        bv_range, box_coder)
-
-        #for evaluation
-        self.class_names = list(input_cfg.class_names)
-        self.center_limit_range = model_cfg.post_center_limit_range
-        self.lidar_input = model_cfg.lidar_input
-
-        eval_dataset = input_reader_builder.build(
-            eval_input_cfg,
-            model_cfg,
-            training=False,
-            voxel_generator=voxel_generator,
-            target_assigner=target_assigner)
-        gt_annos = [
-            info["annos"] for info in eval_dataset.kitti_infos
-        ]
-
-        return target_assigner, gt_annos
-    def predict_kitti_to_anno(self,
-                            predictions_dicts,
-                            class_names,
-                            center_limit_range=None,
-                            lidar_input=False,
-                            global_set=None):
-        annos = []
-        for i, preds_dict in enumerate(predictions_dicts):
-            image_shape = self.batch_image_shape[i]
-            img_idx = preds_dict["image_idx"]
-            if preds_dict["bbox"] is not None:
-                box_2d_preds = preds_dict["bbox"].detach().cpu().numpy()
-                box_preds = preds_dict["box3d_camera"].detach().cpu().numpy()
-                scores = preds_dict["scores"].detach().cpu().numpy()
-                box_preds_lidar = preds_dict["box3d_lidar"].detach().cpu().numpy()
-                # write pred to file
-                label_preds = preds_dict["label_preds"].detach().cpu().numpy()
-                # label_preds = np.zeros([box_2d_preds.shape[0]], dtype=np.int32)
-
-                anno = kitti.get_start_result_anno()
-                num_example = 0
-                for box, box_lidar, bbox, score, label in zip(
-                        box_preds, box_preds_lidar, box_2d_preds, scores,
-                        label_preds):
-                    if not lidar_input:
-                        if bbox[0] > image_shape[1] or bbox[1] > image_shape[0]:
-                            continue
-                        if bbox[2] < 0 or bbox[3] < 0:
-                            continue
-                    # print(img_shape)
-                    if center_limit_range is not None:
-                        limit_range = np.array(center_limit_range)
-                        if (np.any(box_lidar[:3] < limit_range[:3])
-                                or np.any(box_lidar[:3] > limit_range[3:])):
-                            continue
-                    bbox[2:] = np.minimum(bbox[2:], image_shape[::-1])
-                    bbox[:2] = np.maximum(bbox[:2], [0, 0])
-                    anno["name"].append(class_names[int(label)])
-                    anno["truncated"].append(0.0)
-                    anno["occluded"].append(0)
-                    anno["alpha"].append(-np.arctan2(-box_lidar[1], box_lidar[0]) +
-                                         box[6])
-                    anno["bbox"].append(bbox)
-                    anno["dimensions"].append(box[3:6])
-                    anno["location"].append(box[:3])
-                    anno["rotation_y"].append(box[6])
-                    if global_set is not None:
-                        for i in range(100000):
-                            if score in global_set:
-                                score -= 1 / 100000
-                            else:
-                                global_set.add(score)
-                                break
-                    anno["score"].append(score)
-
-                    num_example += 1
-                if num_example != 0:
-                    anno = {n: np.stack(v) for n, v in anno.items()}
-                    annos.append(anno)
-                else:
-                    annos.append(kitti.empty_result_anno())
-            else:
-                annos.append(kitti.empty_result_anno())
-            num_example = annos[-1]["name"].shape[0]
-            annos[-1]["image_idx"] = np.array(
-                [img_idx] * num_example, dtype=np.int64)
-        return annos
-
-class LogLayer(caffe.Layer):
-
-    def setup(self, bottom, top):
-        in1 = bottom[0].data
-        top[0].reshape(*in1.shape)
-
-    def reshape(self, bottom, top):
-        pass
-    def forward(self, bottom, top):
-        in1 = bottom[0].data
-        top[0].reshape(*in1.shape)
-        top[0].data[...] = in1
-        pass
-
-    def backward(self, top, propagate_down, bottom):
-        diff = top[0].diff
-        bottom[0].diff[...]=diff
-        pass
-
-class GlobalPooling(caffe.Layer):
-    def setup(self, bottom, top):
-        pass
-
-    def reshape(self, bottom, top):
-        top[0].reshape(*bottom[0].data.shape)
-
-    def forward(self, bottom, top):
-        n, c, h, w = bottom[0].data.shape
-        self.max_loc = bottom[0].data.reshape(n, c, h*w).argmax(axis=2)
-        top[0].data[...] = bottom[0].data.max(axis=(2, 3), keepdims=True)
-
-    def backward(self, top, propagate_down, bottom):
-        n, c, h, w = top[0].diff.shape
-        nn, cc = np.ix_(np.arange(n), np.arange(c))
-        bottom[0].diff[...] = 0
-        bottom[0].diff.reshape(n, c, -1)[nn, cc, self.max_loc] = top[0].diff.sum(axis=(2, 3))
-
-class ProbRenorm(caffe.Layer):
-    def setup(self, bottom, top):
-        pass
-
-    def reshape(self, bottom, top):
-        top[0].reshape(*bottom[0].data.shape)
-
-    def forward(self, bottom, top):
-        clipped = bottom[0].data * bottom[1].data
-        self.sc = 1.0 / (np.sum(clipped, axis=1, keepdims=True) + 1e-10)
-        top[0].data[...] = clipped * self.sc
-
-    def backward(self, top, propagate_down, bottom):
-        bottom[0].diff[...] = top[0].diff * bottom[1].data * self.sc
-
-class Permute(caffe.Layer):
-    def setup(self, bottom, top):
-        self.dims = [int(v) for v in self.param_str.split('_')]
-        self.dims_ind = list(np.argsort(self.dims))
-
-    def reshape(self, bottom, top):
-        old_shape = bottom[0].data.shape
-        new_shape = [old_shape[d] for d in self.dims]
-        top[0].reshape(*new_shape)
-
-    def forward(self, bottom, top):
-        top[0].data[...] = bottom[0].data.transpose(*self.dims)
-
-    def backward(self, top, propagate_down, bottom):
-        bottom[0].diff[...] = top[0].diff.transpose(*self.dims_ind)
-
-class LossHelper(caffe.Layer):
-    def setup(self, bottom, top):
-        self.old_shape = bottom[0].data.shape
-
-    def reshape(self, bottom, top):
-        new_shape = (self.old_shape[0] * self.old_shape[3], self.old_shape[1], 1, 1)
-        top[0].reshape(*new_shape)
-
-    def forward(self, bottom, top):
-        top[0].data[...] = bottom[0].data.transpose(0, 3, 1, 2).reshape(*top[0].data.shape)
-
-    def backward(self, top, propagate_down, bottom):
-        bottom[0].diff[...] = top[0].diff.reshape(self.old_shape[0], self.old_shape[3], self.old_shape[1], 1
-                                                  ).transpose(0, 2, 3, 1)
-
-class LogLoss(caffe.Layer):
-    def setup(self, bottom, top):
-        self.n, self.c, _, self.s = bottom[0].data.shape
-        self.inds = np.ix_(np.arange(self.n), np.arange(self.c), np.arange(1), np.arange(self.s))
-
-    def reshape(self, bottom, top):
-        top[0].reshape(1, 1, 1, 1)
-
-    def forward(self, bottom, top):
-        self.valid = bottom[0].data[self.inds[0], bottom[1].data.astype(int), self.inds[2], self.inds[3]]
-        top[0].data[:] = -np.mean(np.log(self.valid + 1e-10))
-
-    def backward(self, top, propagate_down, bottom):
-        bottom[0].diff[:] = 0.0
-        bottom[0].diff[self.inds[0], bottom[1].data.astype(int), self.inds[2], self.inds[3]] = \
-            -1.0 / ((self.valid + 1e-10) * (self.n * self.s))
-
-class PickAndScale(caffe.Layer):
-    def setup(self, bottom, top):
-        self.nch_out = len(self.param_str.split('_'))
-        self.dims = []
-        for f in self.param_str.split('_'):
-            if f.find('*') >= 0:
-                self.dims.append((int(f[:f.find('*')]), float(f[f.find('*') + 1:])))
-            elif f.find('/') >= 0:
-                self.dims.append((int(f[:f.find('/')]), 1.0 / float(f[f.find('/') + 1:])))
-
-            else:
-                self.dims.append((int(f), 1.0))
-
-    def reshape(self, bottom, top):
-        top[0].reshape(bottom[0].data.shape[0], self.nch_out, bottom[0].data.shape[2], bottom[0].data.shape[3])
-
-    def forward(self, bottom, top):
-        for i, (j, s) in enumerate(self.dims):
-            top[0].data[:, i, :, :] = bottom[0].data[:, j, :, :] * s
-
-    def backward(self, top, propagate_down, bottom):
-        pass  # TODO NOT_YET_IMPLEMENTED
-
-class SigmoidCrossEntropyWeightLossLayer(caffe.Layer):
-
-    def setup(self, bottom, top):
-        # check for all inputs
-        params = eval(self.param_str)
-        self.cls_weight = float(params["cls_weight"])
-        # if len(bottom) != 2:
-        #     raise Exception("Need two inputs (scores and labels) to compute sigmoid crossentropy loss.")
-
-    def reshape(self, bottom, top):
-        # check input dimensions match between the scores and labels
-        if bottom[0].count != bottom[1].count:
-            raise Exception("Inputs must have the same dimension.")
-        # difference would be the same shape as any input
-        self.diff = np.zeros_like(bottom[0].data, dtype=np.float32)
-        # layer output would be an averaged scalar loss
-        top[0].reshape(1)
-
-    def forward(self, bottom, top):
-        score=bottom[0].data
-        label=bottom[1].data
-        cls_weights=bottom[2].data
-
-        first_term = (label-1)*score
-        second_term = ((1-self.cls_weight)*label - 1)*np.log(1+np.exp(-score))
-
-
-        cls_weight = np.expand_dims(cls_weights, axis = 0)
-
-        top[0].data[...] = -np.sum((first_term + second_term)*cls_weights)
-
-        sig = -1.0/(1.0+np.exp(-score))
-        self.diff = ((self.cls_weight-1)*label+1)*sig + self.cls_weight*label
-        if np.isnan(top[0].data):
-                exit()
-
-    def backward(self, top, propagate_down, bottom):
-        bottom[0].diff[...]=self.diff
